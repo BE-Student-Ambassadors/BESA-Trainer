@@ -68,7 +68,7 @@ export default function WorkGradeResult({workDayId, besaName, outMode}: {workDay
             <div className="text-center py-8">
                 <h3 className="text-2xl font-semibold text-amber-400 mb-2">You're clocked out</h3>
                 <p className="text-sm text-gray-300">
-                    {outMode ? "Out mode, so there's no grade for this visit."
+                    {outMode ? "Nothing you worked on is office work, so there's no grade for this visit."
                         : day?.gradeStatus === "none" ? "Nothing to grade for this visit."
                         : "Your grade for today will show up on your Profile soon."}
                 </p>

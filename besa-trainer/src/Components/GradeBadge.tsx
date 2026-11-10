@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from "react"
 import { getScreenshotUrl, type WorkGrade } from "../Tools/Fetch"
 
 export const GRADE_LABELS: Record<WorkGrade, string> = {
-    A: "Good enough!",
+    A: "Good work!",
     B: "Slightly suspicious with time",
     C: "Very suspicious with time",
 }
