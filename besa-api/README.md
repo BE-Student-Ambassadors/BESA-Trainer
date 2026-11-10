@@ -28,9 +28,9 @@ If either secret is empty, the emails are off and nothing else is affected. A pe
 
 Clock-out measures what got done instead of asking how time was split. The steps at the kiosk are: pick what you worked on, confirm what was found and fill in the rest, describe the day, then see the grade. Someone is clocked out as soon as they confirm, so an API or the AI being down never stops them leaving. If the AI fails, the `grade_pending_work` scheduled function retries every 15 minutes, up to 5 times.
 
-Tours, events and the like can't be measured, so every clock-out also asks for a work mode. Office counts the whole visit as office tasks. Hybrid asks what percentage was office tasks, and only that share of the hours is graded. Out counts the whole visit as out of the office, so nothing is fetched or graded.
+Tours, events and the like can't be measured, so each clock-out gets a work mode from the activities picked. If every activity is on a project it's office, and the whole visit is graded. If none are it's out: nothing is fetched or graded, and there's no description to write. A mix is hybrid, and only the share of the hours that went to activities on a project is graded (activities split the visit evenly).
 
-Grades are A (good enough), B (slightly suspicious) and C (very suspicious). They're on the member's Profile, and leads see everyone's on Work Review, where they can replace a grade. A measure that couldn't be checked never counts against anyone, and a project where nothing could be checked can't be marked down.
+Grades are A (good work), B (slightly suspicious) and C (very suspicious). They're on the member's Profile, and leads see everyone's on Work Review, where they can replace a grade. A measure that couldn't be checked never counts against anyone, and a project where nothing could be checked can't be marked down.
 
 Projects live in the `tracking_projects` collection and are edited on Manage Projects, so a new project needs no code. `tracking_catalog.py` only seeds the starting set the first time. A project's `activities` are the kiosk activity names that count as working on it. Activities with no project, like Tours or Meeting, have nothing to measure and no grade.
 

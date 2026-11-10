@@ -1222,15 +1222,11 @@ class ReportProject(BaseModel):
     measures: list[ReportMeasure] = []
 
 
-#a lot of the job can't be measured (tours, events), so every clock-out says how much of the visit was office work:
-#office is all of it, out is none of it, and hybrid gives a percentage. Only the office part is graded.
 class WorkReport(BaseModel):
     description: str = Field(default="", max_length=WORK_DESCRIPTION_MAX_LENGTH)
     projects: list[ReportProject] = []
     #the one unmatched GitHub account they said is theirs - its commits count, and it's remembered for next time
     claimedAccount: str | None = None
-    workMode: Literal["office", "hybrid", "out"] = "office"
-    officePercent: int | None = Field(default=None, ge=1, le=99)  # hybrid only
 
 
 class ClockOutRequest(BaseModel):
@@ -1263,10 +1259,8 @@ def clockOut(request_data: ClockOutRequest, root_user: dict = Depends(require_ro
     if report is not None:
         #work is measured per project now, not in time, so the analytics get an even split of what they picked
         shares = _even_shares([sh["activity"] for sh in shares])
-        if report.workMode == "hybrid" and report.officePercent is None:
-            raise HTTPException(status_code=400, detail="Please say how much of your time was office tasks.")
-        chosen, _ = _projects_for_activities(_tracking_projects(db), [sh["activity"] for sh in shares])
-        if chosen and report.workMode != "out" and not report.description.strip():
+        work_mode, office_percent = _work_mode(db, [sh["activity"] for sh in shares])
+        if work_mode != "out" and not report.description.strip():
             raise HTTPException(status_code=400, detail="Please describe what you did today.")
     leave_early_seconds = _leave_early_seconds(data, now) if request_data.leaveEarly else 0
     elapsed_minutes = max(0.0, (now - checked_in_at).total_seconds() / 60)
@@ -1289,7 +1283,8 @@ def clockOut(request_data: ClockOutRequest, root_user: dict = Depends(require_ro
     work_day_id = None
     if report is not None:
         work_day_id = _record_work_visit(db, target_ref.id, data, checked_in_at, now, credited_hours,
-                                         _visit_break_seconds(data, now) + leave_early_seconds, [w["activity"] for w in worked_on], report)
+                                         _visit_break_seconds(data, now) + leave_early_seconds, [w["activity"] for w in worked_on], report,
+                                         work_mode, office_percent)
     return {"success": True, "besaName": data.get("besaName"), "hoursThisSession": elapsed_hours, "workedOn": worked_on,
             "leftEarlySeconds": leave_early_seconds, "workDayId": work_day_id}
 
@@ -2616,6 +2611,18 @@ def _projects_for_activities(projects: list, activities: list) -> tuple[list, li
     return chosen, [a for a in activities if a not in covered]
 
 
+#A lot of the job can't be measured (tours, events), so the activities picked at clock-out decide how much of the visit
+#was office work: all of them on a project is office, none is out, and a mix is hybrid. Activities split the visit
+#evenly, so a hybrid visit's office share is the share of its activities that are on a project. Only that part is graded.
+def _work_mode(db, activities: list) -> tuple[str, int]:
+    _, untracked = _projects_for_activities(_tracking_projects(db), activities)
+    if len(untracked) == len(activities):
+        return "out", 0
+    if not untracked:
+        return "office", 100
+    return "hybrid", min(99, max(1, round(100 * (len(activities) - len(untracked)) / len(activities))))
+
+
 #who they are to outside systems: the emails they sign in with here and on the roster, plus any they added on Profile
 def _work_identity(uid: str, data: dict) -> dict:
     emails = {e.lower() for e in data.get("trackingEmails") or []}
@@ -2922,13 +2929,13 @@ def _remember_account(db, uid: str, projects: list, account: str | None):
 
 #Called at clock-out. Never raises: losing the report is much better than failing the clock-out it's attached to.
 def _record_work_visit(db, uid: str, data: dict, checked_in_at: datetime, ended_at: datetime, credited_hours: float,
-                       break_seconds: int, activities: list, report: WorkReport) -> str | None:
+                       break_seconds: int, activities: list, report: WorkReport, work_mode: str, office_percent: int) -> str | None:
     try:
         draft_ref = db.collection(WORK_DRAFTS_COLLECTION).document(uid)
         draft = draft_ref.get().to_dict() or {}
         drafted_for = draft.get("clockIn")
         #out mode measures nothing, even if they fetched a draft before going back and choosing it
-        if report.workMode == "out" or not drafted_for or _to_pacific(drafted_for) != checked_in_at:
+        if work_mode == "out" or not drafted_for or _to_pacific(drafted_for) != checked_in_at:
             draft = {}
         projects = _apply_report(draft, report)
         _remember_account(db, uid, projects, report.claimedAccount)
@@ -2941,7 +2948,7 @@ def _record_work_visit(db, uid: str, data: dict, checked_in_at: datetime, ended_
         day_id = f"{uid}_{date}"
         day_ref = db.collection(WORK_DAYS_COLLECTION).document(day_id)
         #an out visit adds nothing to grade, so it leaves a day that's already been graded as it was
-        if report.workMode != "out":
+        if work_mode != "out":
             grading = {"gradeStatus": "pending", "gradeAttempts": 0}
         else:
             grading = {} if day_ref.get().exists else {"gradeStatus": "none"}
@@ -2950,8 +2957,8 @@ def _record_work_visit(db, uid: str, data: dict, checked_in_at: datetime, ended_
             "visits": firestore.ArrayUnion([{
                 "clockIn": checked_in_at, "clockOut": ended_at, "creditedHours": credited_hours, "breakSeconds": break_seconds,
                 "activities": activities, "description": report.description.strip(), "projects": projects,
-                "untracked": draft.get("untracked") or [], "workMode": report.workMode,
-                "officePercent": {"office": 100, "out": 0}.get(report.workMode, report.officePercent),
+                "untracked": draft.get("untracked") or [], "workMode": work_mode,
+                "officePercent": office_percent,
             }]),
         }, merge=True)
         draft_ref.delete()

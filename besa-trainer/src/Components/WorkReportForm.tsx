@@ -3,7 +3,7 @@ import { FaCheck } from "react-icons/fa"
 import { MoonLoader } from "react-spinners"
 import { Screenshot } from "./GradeBadge"
 import CourseChecklist from "./CourseChecklist"
-import type { WorkItem, WorkMeasure, WorkMode, WorkProject, WorkReportInput } from "../Tools/Fetch"
+import type { WorkItem, WorkMeasure, WorkProject, WorkReportInput } from "../Tools/Fetch"
 
 const DESCRIPTION_MAX_LENGTH = 1000 //same cap as the backend's WORK_DESCRIPTION_MAX_LENGTH
 
@@ -33,11 +33,10 @@ export function withDefaultConfirmed(entries: WorkEntries, projects: WorkProject
     return {...entries, confirmed}
 }
 
-export function toWorkReport(entries: WorkEntries, projects: WorkProject[], workMode: WorkMode, officePercent: number): WorkReportInput {
+//the work mode isn't sent - the backend works it out from which activities are on a project
+export function toWorkReport(entries: WorkEntries, projects: WorkProject[]): WorkReportInput {
     return {
         description: entries.description.trim(),
-        workMode,
-        ...(workMode === "hybrid" ? {officePercent} : {}),
         ...(entries.claimedAccount ? {claimedAccount: entries.claimedAccount} : {}),
         projects: projects.map(project => ({
             projectId: project.projectId,
@@ -218,12 +217,15 @@ export default function WorkReportForm({projects, untracked, entries, setEntries
             {untracked.length > 0 &&
                 <p className="text-xs text-gray-400 mb-3">Nothing to measure for {untracked.join(", ")}.</p>
             }
-            <label htmlFor="work-description" className="block text-sm font-semibold mb-1">
-                What did you do today?{projects.length === 0 && <span className="font-normal text-gray-400"> (optional)</span>}
-            </label>
-            <textarea id="work-description" rows={3} maxLength={DESCRIPTION_MAX_LENGTH} value={entries.description}
-                onChange={(e) => setEntries({...entries, description: e.target.value})}
-                className="w-full p-3 rounded-xl bg-gray-800 text-white border border-gray-600"/>
+            {/* out mode (nothing on a project) has nothing to grade, so there's nothing to describe either */}
+            {projects.length > 0 &&
+                <>
+                    <label htmlFor="work-description" className="block text-sm font-semibold mb-1">What did you do today?</label>
+                    <textarea id="work-description" rows={3} maxLength={DESCRIPTION_MAX_LENGTH} value={entries.description}
+                        onChange={(e) => setEntries({...entries, description: e.target.value})}
+                        className="w-full p-3 rounded-xl bg-gray-800 text-white border border-gray-600"/>
+                </>
+            }
         </>
     )
 }

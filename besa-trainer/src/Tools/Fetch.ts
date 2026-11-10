@@ -1016,8 +1016,6 @@ export type WorkMode = "office" | "hybrid" | "out"
 
 export type WorkReportInput = {
     description: string
-    workMode: WorkMode
-    officePercent?: number // hybrid only
     claimedAccount?: string // the one unmatched GitHub account they picked as theirs
     projects: {projectId: string, measures: {measureId: string, quantity?: number, checked?: boolean, confirmedItems?: string[]}[]}[]
 }
