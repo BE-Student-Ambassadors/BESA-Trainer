@@ -76,12 +76,14 @@ export type TaskNote = {
     description: string
     items: {id: string, text: string, done: boolean, doneAt: string | null}[]
     updatedAt: string | null
+    deadline: string | null // "YYYY-MM-DD" - the checklist is due by the end of that day (Pacific)
+    overdue: boolean // the deadline has passed and the checklist isn't finished
 }
 
 //BESA Lead only - writes the note on one member's task (an empty description and no checkboxes removes it).
-//Checkboxes that keep their id keep whether they're checked.
-export function setTaskNote(targetUid: string, task: string, description: string, items: {id?: string, text: string}[]): Promise<{success: boolean, detail?: string, taskNotes?: TaskNote[]}> {
-    return kioskPost("task-notes/set", {targetUid, task, description, items})
+//Checkboxes that keep their id keep whether they're checked. A deadline needs at least one checkbox.
+export function setTaskNote(targetUid: string, task: string, description: string, items: {id?: string, text: string}[], deadline: string | null = null): Promise<{success: boolean, detail?: string, taskNotes?: TaskNote[]}> {
+    return kioskPost("task-notes/set", {targetUid, task, description, items, deadline})
 }
 
 //ticks one checkbox - the root kiosk passes whose note it is; a member checking their own leaves targetUid out
@@ -252,8 +254,8 @@ export function assignTasks(targetUid: string, tasks: string[]): Promise<{succes
 
 //---- Root kiosk: clock in/out, current sessions, hours, activity types ----
 
-//root only - who this School Id is and what Clock In offers them: every activity, with their assigned tasks
-//listed in recommended (highlighted as Lead recommended)
+//root only - who this School Id is and what Clock In offers them: their assigned tasks (in recommended,
+//highlighted as Lead recommended) plus Other
 export function getClockInOptions(studentId: string): Promise<{success: boolean, detail?: string, besaName?: string, tasks?: string[], recommended?: string[], alreadyClockedIn?: boolean, taskNotes?: TaskNote[]}> {
     return kioskPost("clock-in/options", {studentId})
 }
@@ -1037,7 +1039,8 @@ export type WorkDay = {
     needsExplanation: boolean
     description: string
     hours: number
-    visits: {clockIn: string, clockOut: string, hours: number, description: string, untracked: string[], workMode: WorkMode, officePercent: number, projects: WorkProject[]}[]
+    visits: {clockIn: string, clockOut: string, hours: number, description: string, untracked: string[], workMode: WorkMode, officePercent: number, projects: WorkProject[],
+        checklistDone?: {task: string, item: string, onTime?: boolean}[]}[] // lead-note checkboxes ticked during the visit (count in their favor)
 }
 
 export type TrackingMeasureConfig = {

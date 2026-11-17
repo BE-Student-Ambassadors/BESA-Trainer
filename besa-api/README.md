@@ -20,6 +20,8 @@ The emails are sent from a Gmail account. Setup:
 
 When a member sends hours requests from their Profile, the root account gets one email listing each time range, what was worked on, and the reason. The root admin approves or denies them in Profile under Hours Requests.
 
+When a BESA Lead leaves a note with checkboxes on Assign Tasks, they can give it a deadline. The checklist is due by the end of that day, Pacific time. If any box is still unticked after that, the `task_deadline_alerts` scheduled function (every morning at 8) emails the member and the root account. Each deadline is emailed about once, and moving the deadline resets it. A late note shows as overdue on the kiosk, on Profile and on Assign Tasks.
+
 Every email goes to the address each account signs in with (from Firebase Auth).
 
 If either secret is empty, the emails are off and nothing else is affected. A personal Gmail account can send about 500 emails a day, and each person on the BCC list (the BESA plus every Lead) counts toward that.
@@ -29,6 +31,8 @@ If either secret is empty, the emails are off and nothing else is affected. A pe
 Clock-out measures what got done instead of asking how time was split. The steps at the kiosk are: pick what you worked on, confirm what was found and fill in the rest, describe the day, then see the grade. Someone is clocked out as soon as they confirm, so an API or the AI being down never stops them leaving. If the AI fails, the `grade_pending_work` scheduled function retries every 15 minutes, up to 5 times.
 
 Tours, events and the like can't be measured, so each clock-out gets a work mode from the activities picked. If every activity is on a project it's office, and the whole visit is graded. If none are it's out: nothing is fetched or graded, and there's no description to write. A mix is hybrid, and only the share of the hours that went to activities on a project is graded (activities split the visit evenly).
+
+Checkboxes on a lead's note that the member ticks while clocked in are saved with that visit and given to the grader. They count in the member's favor, and a day where they finished any of them can't get a C. They're listed on the day in Work Review and Profile.
 
 Grades are A (good work), B (slightly suspicious) and C (very suspicious). They're on the member's Profile, and leads see everyone's on Work Review, where they can replace a grade. A measure that couldn't be checked never counts against anyone, and a project where nothing could be checked can't be marked down.
 

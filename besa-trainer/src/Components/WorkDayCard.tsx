@@ -56,6 +56,17 @@ export default function WorkDayCard({day, showName, owner, onChange, leadControl
 
             {open &&
                 <div className="mt-3 border-t border-gray-700 pt-3 flex flex-col gap-3">
+                    {day.visits.some(visit => visit.checklistDone?.length) &&
+                        <div>
+                            <p className="font-semibold text-sm text-amber-400">Lead checklist items finished</p>
+                            {day.visits.flatMap(visit => visit.checklistDone || []).map((done, i) => (
+                                <p key={i} className="text-xs text-gray-300 py-0.5">
+                                    <span className="text-gray-400">{done.task}: </span>{done.item}
+                                    {done.onTime && <span className="text-green-400"> · before the deadline</span>}
+                                </p>
+                            ))}
+                        </div>
+                    }
                     {day.visits.flatMap(visit => visit.projects).map((project, i) => (
                         <div key={project.projectId + i}>
                             <p className="font-semibold text-sm text-amber-400 flex items-center gap-2">

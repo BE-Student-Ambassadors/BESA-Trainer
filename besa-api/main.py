@@ -372,8 +372,8 @@ def besaAccounts(lead_user: dict = Depends(require_lead_or_root_admin)):
 
 # ---- Assigned tasks (BESA Leads' Assign Tasks page) ----
 # Leads pick which of the shared activity types each besa/besaLead (themselves included) should work on -
-# stored as assignedTasks on the member's user doc. The kiosk's Clock In still offers every activity, but
-# highlights these as "Lead recommended" for that person. Clock-out always offers every activity too.
+# stored as assignedTasks on the member's user doc. The kiosk's Clock In offers only these (as "Lead recommended")
+# plus Other for anything else. Clock-out still offers every activity.
 TASK_NAME_MAX_LENGTH = 40
 
 
@@ -403,9 +403,28 @@ def assignTasks(request_data: AssignTasksRequest, lead_user: dict = Depends(requ
 # items are an optional checklist the member ticks off - at the kiosk (Current Sessions) or on their Profile - and
 # the leads see that progress on Assign Tasks. A note stays until a lead removes it. Ticking the last checkbox
 # emails every BESA Lead and root account (see _notify_checklist_done).
+# A note with checkboxes can have a deadline (a Pacific date, due by the end of that day). If the checklist still
+# isn't finished once it's passed, the task_deadline_alerts scheduled function emails the member and the root
+# account, once per deadline (deadlineAlertSentFor remembers which one). Moving the deadline re-arms it.
 TASK_NOTE_DESCRIPTION_MAX_LENGTH = 1000
 TASK_NOTE_ITEM_MAX_LENGTH = 200
 TASK_NOTE_MAX_ITEMS = 20
+
+
+#the moment a "YYYY-MM-DD" deadline runs out: the end of that day, Pacific
+def _deadline_end(deadline: str) -> datetime:
+    return datetime.combine(date_cls.fromisoformat(deadline) + timedelta(days=1), datetime.min.time(), tzinfo=PACIFIC)
+
+
+def _note_finished(note: dict) -> bool:
+    items = [i for i in note.get("items") or [] if isinstance(i, dict)]
+    return bool(items) and all(i.get("done") for i in items)
+
+
+#past its deadline with the checklist still not finished
+def _note_overdue(note: dict, now: datetime | None = None) -> bool:
+    deadline = note.get("deadline")
+    return bool(deadline) and (now or datetime.now(PACIFIC)) >= _deadline_end(deadline) and not _note_finished(note)
 
 
 #notes as a list (only for `tasks`, in that order, when given - e.g. what they clocked in for)
@@ -415,6 +434,8 @@ def _serialize_task_notes(notes, tasks: list | None = None) -> list:
     return [{
         "task": task,
         "description": notes[task].get("description") or "",
+        "deadline": notes[task].get("deadline") or None,
+        "overdue": _note_overdue(notes[task]),
         "items": [{"id": i.get("id"), "text": i.get("text") or "", "done": bool(i.get("done")),
                    "doneAt": i["doneAt"].isoformat() if i.get("doneAt") else None}
                   for i in notes[task].get("items") or [] if isinstance(i, dict)],
@@ -432,6 +453,7 @@ class SetTaskNoteRequest(BaseModel):
     task: str
     description: str = ""
     items: list[TaskNoteItem] = []
+    deadline: str | None = None  # "YYYY-MM-DD", due by the end of that day (Pacific); needs at least one checkbox
 
 
 #BESA Lead (or root admin) - writes (or, when it's left empty, removes) the note on one member's task
@@ -461,8 +483,23 @@ def setTaskNote(request_data: SetTaskNoteRequest, lead_user: dict = Depends(requ
         items.append({"id": old["id"] if old else secrets.token_hex(6), "text": text,
                       "done": bool(old and old.get("done")), "doneAt": (old or {}).get("doneAt")})
 
+    old_note = notes.get(task) or {}
+    deadline = (request_data.deadline or "").strip() or None
+    if deadline:
+        try:
+            date_cls.fromisoformat(deadline)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="That deadline isn't a valid date.")
+        if not items:
+            raise HTTPException(status_code=400, detail="Add at least one checkbox so there's something to finish by the deadline.")
+        #a new deadline has to be in the future - one that's already set can stay as it is
+        if deadline != old_note.get("deadline") and _deadline_end(deadline) <= datetime.now(PACIFIC):
+            raise HTTPException(status_code=400, detail="The deadline can't be in the past.")
+
     if description or items:
-        notes[task] = {"description": description, "items": items, "updatedAt": datetime.now(PACIFIC)}
+        notes[task] = {"description": description, "items": items, "updatedAt": datetime.now(PACIFIC), "deadline": deadline,
+                       #still announced only if it's the same deadline that was already emailed about
+                       "deadlineAlertSentFor": old_note.get("deadlineAlertSentFor") if deadline and old_note.get("deadlineAlertSentFor") == deadline else None}
     else:
         notes.pop(task, None)
     target_ref.update({"taskNotes": notes})
@@ -518,12 +555,65 @@ def _notify_checklist_done(besa_name, task: str, note: dict):
                       f"Checklist-done ({name}, {task})")
 
 
-#what the member can clock in for (every activity), and which of those a lead recommended - their assigned tasks
-#that are still on the shared activity list (one removed at the kiosk drops out)
+#anything a member wasn't assigned goes under this at clock-in
+OTHER_TASK = "Other"
+
+
+#to the member and the root account(s), once a note's deadline has passed with its checklist unfinished
+def _notify_deadline_missed(uid: str, besa_name, task: str, note: dict):
+    name = besa_name or "A BESA"
+    due = date_cls.fromisoformat(note["deadline"]).strftime("%A, %B %-d")
+    items = [i for i in note.get("items") or [] if isinstance(i, dict)]
+    left = "\n".join(f"- [ ] {i.get('text') or ''}" for i in items if not i.get("done"))
+    done = len([i for i in items if i.get("done")])
+    description = f'Note: "{note["description"]}"\n\n' if note.get("description") else ""
+    body = (f"The {task} checklist for {name} was due by the end of {due}, and {done} of {len(items)} items are checked off.\n\n"
+            f"{description}Still to do:\n{left}\n\n"
+            "Items can be checked off at the kiosk (Current Sessions) or on Profile. A BESA Lead can change the deadline on Assign Tasks.")
+    _send_alert_email(f"{name}: the {task} deadline has passed", body, lambda: {uid} | _uids_of_type("root"),
+                      f"Deadline-missed ({name}, {task})")
+
+
+#every note whose deadline has passed unfinished and hasn't been emailed about yet. Each one is marked before its
+#email goes out, so an overlapping run can't send it twice (a lost email beats a repeated one here).
+def _send_deadline_alerts():
+    db = firestore.client()
+    now = datetime.now(PACIFIC)
+    for u in _users_ref(db).stream():
+        data = u.to_dict() or {}
+        if data.get("accountType") not in ("besa", "besaLead"):
+            continue
+        notes = data.get("taskNotes") if isinstance(data.get("taskNotes"), dict) else {}
+        due = [task for task, note in notes.items()
+               if isinstance(note, dict) and _note_overdue(note, now) and note.get("deadlineAlertSentFor") != note.get("deadline")]
+        if not due:
+            continue
+
+        @firestore.transactional
+        def claim(transaction, ref=u.reference, tasks=tuple(due)):
+            fresh = (ref.get(transaction=transaction).to_dict() or {}).get("taskNotes") or {}
+            claimed = [t for t in tasks if isinstance(fresh.get(t), dict) and _note_overdue(fresh[t], now)
+                       and fresh[t].get("deadlineAlertSentFor") != fresh[t].get("deadline")]
+            for t in claimed:
+                fresh[t]["deadlineAlertSentFor"] = fresh[t]["deadline"]
+            if claimed:
+                transaction.update(ref, {"taskNotes": fresh})
+            return [(t, fresh[t]) for t in claimed]
+
+        try:
+            for task, note in claim(db.transaction()):
+                _notify_deadline_missed(u.id, data.get("besaName"), task, note)
+        except Exception as e:
+            print(f"Deadline check for {data.get('besaName')} failed: {e}")
+
+
+#what the member can clock in for: only what a lead recommended (their assigned tasks that are still on the
+#shared activity list - one removed at the kiosk drops out), plus Other for anything else. Clock-out still
+#offers every activity.
 def _clock_in_tasks(db, data: dict) -> tuple[list, list]:
     available = _activity_types(db)
-    recommended = [t for t in data.get("assignedTasks") or [] if t in available]
-    return available, recommended
+    recommended = [t for t in data.get("assignedTasks") or [] if t in available and t != OTHER_TASK]
+    return recommended + [OTHER_TASK], recommended
 
 
 #BESA Lead only (Manage Admins) - hours per activity per day from the permanent activity log, over the last
@@ -1082,10 +1172,10 @@ def clockIn(request_data: ClockInRequest, root_user: dict = Depends(require_root
     target_ref, data = _find_besa_by_student_id(db, request_data.studentId)
     if target_ref is None:
         raise HTTPException(status_code=404, detail="No BESA account found with that School Id.")
-    available = _activity_types(db)
+    available, _ = _clock_in_tasks(db, data)
     not_allowed = [a for a in activities if a not in available]
     if not_allowed:
-        raise HTTPException(status_code=400, detail=f'"{not_allowed[0]}" isn\'t on the activity list anymore.')
+        raise HTTPException(status_code=400, detail=f'"{not_allowed[0]}" isn\'t one of your recommended tasks - pick Other instead.')
     #a forgotten session from an earlier day shouldn't block today's legitimate clock-in
     data = _auto_clock_out_if_needed(target_ref, data)
     if data.get("lastCheckedIn"):
@@ -2927,6 +3017,24 @@ def _remember_account(db, uid: str, projects: list, account: str | None):
         _users_ref(db).document(uid).update({"githubAccounts": firestore.ArrayUnion([account])})
 
 
+#the lead-note checkboxes they ticked while clocked in (and haven't unticked since) - real, lead-assigned work that
+#counts in their favor when the day is graded
+def _checklist_done_during(data: dict, since: datetime, until: datetime) -> list:
+    notes = data.get("taskNotes") if isinstance(data.get("taskNotes"), dict) else {}
+    done = []
+    for task, note in notes.items():
+        if not isinstance(note, dict):
+            continue
+        for item in note.get("items") or []:
+            done_at = item.get("doneAt") if isinstance(item, dict) and item.get("done") else None
+            if done_at and since <= done_at <= until:
+                entry = {"task": task, "item": item.get("text") or ""}
+                if note.get("deadline"):
+                    entry["onTime"] = done_at < _deadline_end(note["deadline"])
+                done.append(entry)
+    return done
+
+
 #Called at clock-out. Never raises: losing the report is much better than failing the clock-out it's attached to.
 def _record_work_visit(db, uid: str, data: dict, checked_in_at: datetime, ended_at: datetime, credited_hours: float,
                        break_seconds: int, activities: list, report: WorkReport, work_mode: str, office_percent: int) -> str | None:
@@ -2944,6 +3052,7 @@ def _record_work_visit(db, uid: str, data: dict, checked_in_at: datetime, ended_
             for measure in project["measures"]:
                 if measure["type"] == "course":
                     measure.update(_course_measure(db, uid, checked_in_at, ended_at))
+        checklist = _checklist_done_during(data, checked_in_at, ended_at)
         date = checked_in_at.date().isoformat()
         day_id = f"{uid}_{date}"
         day_ref = db.collection(WORK_DAYS_COLLECTION).document(day_id)
@@ -2958,7 +3067,7 @@ def _record_work_visit(db, uid: str, data: dict, checked_in_at: datetime, ended_
                 "clockIn": checked_in_at, "clockOut": ended_at, "creditedHours": credited_hours, "breakSeconds": break_seconds,
                 "activities": activities, "description": report.description.strip(), "projects": projects,
                 "untracked": draft.get("untracked") or [], "workMode": work_mode,
-                "officePercent": office_percent,
+                "officePercent": office_percent, "checklistDone": checklist,
             }]),
         }, merge=True)
         draft_ref.delete()
@@ -3037,6 +3146,7 @@ def _grade_work_day(db, day_id: str) -> dict:
             "officeHours": _office_hours(v), "breakMinutes": round((v.get("breakSeconds") or 0) / 60),
             "theirDescription": v.get("description") or "(none)",
             "activitiesWithNothingToMeasure": v.get("untracked") or [],
+            "leadChecklistItemsTheyFinished": v.get("checklistDone") or [],
             "projects": [{"project": p["name"], "gradable": _project_gradable(p),
                           "measures": [_grade_measure_view(m) for m in p["measures"]]} for p in v.get("projects") or []],
         } for v in office_visits],
@@ -3047,7 +3157,8 @@ def _grade_work_day(db, day_id: str) -> dict:
     if earlier:
         context["whatAnEarlierGradeSawInThePictures"] = earlier
     try:
-        answer = grade_day(_get_genai_client(), context, images, {p["name"] for p in projects} - gradable)
+        answer = grade_day(_get_genai_client(), context, images, {p["name"] for p in projects} - gradable,
+                           finished_checklist=any(v.get("checklistDone") for v in office_visits))
     except Exception as e:
         print(f"Grading {day_id} failed: {e}")
         ref.update({"gradeStatus": "failed", "gradeAttempts": firestore.Increment(1)})
@@ -3118,6 +3229,7 @@ def _serialize_work_day(doc_id: str, day: dict) -> dict:
             "clockIn": v["clockIn"].isoformat(), "clockOut": v["clockOut"].isoformat(), "hours": v.get("creditedHours") or 0,
             "description": v.get("description") or "", "untracked": v.get("untracked") or [],
             "workMode": v.get("workMode") or "office", "officePercent": v.get("officePercent", 100),
+            "checklistDone": v.get("checklistDone") or [],
             "projects": [{"projectId": p["projectId"], "name": p["name"], "measures": [_serialize_work_measure(m) for m in p["measures"]]}
                          for p in v.get("projects") or []],
         } for v in day.get("visits") or []],
@@ -3907,6 +4019,17 @@ def break_end_alerts(event: scheduler_fn.ScheduledEvent) -> None:
             requests.get(API_PING_URL, timeout=10)
         except Exception as e:
             print(f"api warm-up ping failed: {e}")
+
+
+#emails the member and root about lead-note deadlines that passed with the checklist unfinished. Deadlines end at
+#midnight, so this runs each morning and covers the day before (and anything an earlier run missed).
+@scheduler_fn.on_schedule(
+    schedule="0 8 * * *",
+    timezone="America/Los_Angeles",
+    secrets=["BREAK_ALERT_GMAIL_ADDRESS", "BREAK_ALERT_GMAIL_APP_PASSWORD"],
+)
+def task_deadline_alerts(event: scheduler_fn.ScheduledEvent) -> None:
+    _send_deadline_alerts()
 
 
 #grades anything the kiosk didn't get to (closed mid-flow) and retries days the AI failed on

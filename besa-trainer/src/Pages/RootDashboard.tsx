@@ -108,8 +108,8 @@ type ClockInLookup =
     | {status: "found", besaName: string, tasks: string[], recommended: string[], alreadyClockedIn: boolean, taskNotes: TaskNote[]}
     | {status: "error", detail: string}
 
-//School Id, then every task to pick from - the ones a BESA Lead assigned that person (Assign Tasks) come first,
-//highlighted as Lead recommended, and picking one opens the lead's note on it. The lookup runs a moment after
+//School Id, then the tasks to pick from - only the ones a BESA Lead assigned that person (Assign Tasks),
+//highlighted as Lead recommended, plus Other for anything else. Picking one opens the lead's note on it. The lookup runs a moment after
 //they stop typing.
 function ClockInPanel({onClockedIn}: {onClockedIn: () => void}) {
     const [studentId, setStudentId] = useState("")
@@ -203,7 +203,7 @@ function ClockInPanel({onClockedIn}: {onClockedIn: () => void}) {
                             ))}
                         </div>
                         {selected.length === 0 &&
-                            <p className="text-xs text-be-light-gray text-center mb-3">Pick at least one task you intend to work on to clock in.</p>
+                            <p className="text-xs text-be-light-gray text-center mb-3">Pick at least one task you intend to work on to clock in - choose Other if it isn't listed.</p>
                         }
                         {/* the leads' guidance on the tasks they picked - it's checked off from Current Sessions */}
                         {lookup.taskNotes.some(note => selected.includes(note.task)) &&
