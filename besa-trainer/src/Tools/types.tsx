@@ -19,6 +19,7 @@ export type User = {
     lastCheckedInNotes?: {text: string, at: Date}[] // notes added from the kiosk during the current visit
     questionProgress?: QuestionProgress[] // mirrors `progress`, but for question-set practice
     customAnswers?: CustomAnswer[] // personalized answers, mirrors scriptPaths' "your own take" idea
+    assignedTasks?: string[] // what the BESA Leads want them working on (Assign Tasks) - the kiosk's Clock In options
 }
 
 //one calendar day's worked hours, recorded via the root kiosk's clock in/out flow.

@@ -5,6 +5,7 @@ import { doc, getDoc } from "firebase/firestore";
 import Header from "../Components/Header";
 import RootDashboard from "./RootDashboard";
 import ScreenshotCard, { SlugworksLink } from "../Components/ScreenshotCard";
+import MyTasks from "../Components/MyTasks";
 import { getFirebaseAuth } from "../Tools/firebase";
 import { db, getQuestionSets } from "../Tools/firestore";
 import type { User as CustomUser, QuestionSet } from "../Tools/types";
@@ -72,7 +73,7 @@ export default function Home() {
         return <RootDashboard/>
     }
 
-    return isBesa ? <BesaDashboard brandName={brandName}/> : <UserDashboard brandName={brandName}/>
+    return isBesa ? <BesaDashboard brandName={brandName} assignedTasks={userData?.assignedTasks || []}/> : <UserDashboard brandName={brandName}/>
 }
 
 //public marketing page for logged-out visitors - anyone curious about Baskin Engineering (prospective
@@ -254,8 +255,9 @@ function UserDashboard({brandName}: {brandName: string}) {
     )
 }
 
-//a BESA/BESA Lead's dashboard - the full practice experience (rehearsal, quizzes, progress tracking).
-function BesaDashboard({brandName}: {brandName: string}) {
+//a BESA/BESA Lead's dashboard - their tasks from the leads up top, then the full practice experience
+//(rehearsal, quizzes, progress tracking).
+function BesaDashboard({brandName, assignedTasks}: {brandName: string, assignedTasks: string[]}) {
     const [questionSets, setQuestionSets] = useState<QuestionSet[]>([])
 
     useEffect(() => {
@@ -273,6 +275,9 @@ function BesaDashboard({brandName}: {brandName: string}) {
                     <hr className="w-2/4 my-4 border-be-orange"></hr>
 
                     <div className="flex md:block gap-2 flex-wrap">
+                        <SideBarElement to="#my-tasks">
+                            <h4 className="font-medium">My Tasks</h4>
+                        </SideBarElement>
                         <SideBarElement to="#general-tour">
                             <h4 className="font-medium">Practice Tours</h4>
                         </SideBarElement>
@@ -282,6 +287,7 @@ function BesaDashboard({brandName}: {brandName: string}) {
                     </div>
                 </div>
                 <div className="w-11/12 md:w-4/6 mx-auto md:mx-0 mt-6 md:mt-16">
+                    <MyTasks assignedTasks={assignedTasks}/>
                     <ScreenshotCard/>
                     <SlugworksLink/>
                     <div id="general-tour" className="flex flex-col sm:flex-row justify-between items-start gap-3 scroll-mt-24 mb-4">
