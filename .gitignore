@@ -34,3 +34,5 @@ dist-ssr
 # Python bytecode caches
 __pycache__/
 *.pyc
+.vercel
+.env*
