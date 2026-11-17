@@ -92,6 +92,7 @@ export default function AssignTasks() {
                 <p className="text-gray-400 text-sm mb-6">
                     Choose what each BESA should work on - at the kiosk's Clock In, the tasks assigned to someone here are highlighted as
                     "Lead recommended", and those are the only tasks they can pick there (anything else goes under Other). BESA Leads can have tasks too, including your own.
+                    To set a deadline, open a task's note under someone's name, add checkboxes, and pick a date.
                 </p>
 
                 {accounts === null || tasks === null ?
@@ -207,14 +208,14 @@ function MemberTaskNotes({account, tasks, onSaved}: {account: BesaAccount, tasks
                         <div className="flex-1 min-w-0"><TaskNoteCard note={note}/></div>
                         <button onClick={() => setEditing(task)} disabled={editing !== null}
                             className="text-xs px-3 py-2 rounded-full bg-gray-700 hover:bg-gray-600 disabled:opacity-40 shrink-0">
-                            Edit
+                            {note.deadline ? "Edit" : "Edit / Set Deadline"}
                         </button>
                     </div>
                 )
             })}
             {withoutNote.length > 0 && editing === null &&
                 <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-xs text-gray-400">Add a note:</span>
+                    <span className="text-xs text-gray-400">Add a note or deadline:</span>
                     {withoutNote.map(task => (
                         <button key={task} onClick={() => setEditing(task)}
                             className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-gray-600 text-gray-300 hover:bg-gray-700">
@@ -244,6 +245,7 @@ function TaskNoteEditor({account, task, note, onDone}: {
     const [nextKey, setNextKey] = useState(items.length)
     const [deadline, setDeadline] = useState(note?.deadline || "")
     const [busy, setBusy] = useState(false)
+    const hasItems = items.some(i => i.text.trim())
     const [error, setError] = useState("")
 
     async function save(remove = false) {
@@ -285,22 +287,22 @@ function TaskNoteEditor({account, task, note, onDone}: {
                     <FaPlus size={9}/> Add checkbox
                 </button>
             }
-            {/* a deadline needs something to finish, so it only shows once there's a checkbox */}
-            {items.some(i => i.text.trim()) &&
-                <div className="flex flex-wrap items-center gap-2">
-                    <label htmlFor={`deadline-${task}`} className="text-xs text-gray-400">Deadline (optional)</label>
-                    <input id={`deadline-${task}`} type="date" value={deadline} disabled={busy}
-                        min={note?.deadline && note.deadline === deadline ? undefined : todayIso()}
-                        onChange={(e) => setDeadline(e.target.value)}
-                        className="p-1.5 px-2 rounded-lg bg-gray-700 text-white text-xs [color-scheme:dark]"/>
-                    {deadline &&
-                        <button onClick={() => setDeadline("")} disabled={busy} className="text-xs text-gray-400 hover:text-white underline">Clear</button>
-                    }
-                    <p className="w-full text-xs text-gray-500">
-                        Due by the end of that day. If the checkboxes aren't all ticked by then, {account.besaName || "they"} and the root account get an email.
-                    </p>
-                </div>
-            }
+            {/* always shown so leads can find it - a deadline needs something to finish, so it unlocks once there's a checkbox */}
+            <div className="flex flex-wrap items-center gap-2 rounded-lg bg-gray-800/70 p-2">
+                <label htmlFor={`deadline-${task}`} className="text-xs font-semibold text-gray-300">Deadline (optional)</label>
+                <input id={`deadline-${task}`} type="date" value={hasItems ? deadline : ""} disabled={busy || !hasItems}
+                    min={note?.deadline && note.deadline === deadline ? undefined : todayIso()}
+                    onChange={(e) => setDeadline(e.target.value)}
+                    className="p-1.5 px-2 rounded-lg bg-gray-700 text-white text-xs [color-scheme:dark] disabled:opacity-40"/>
+                {deadline && hasItems &&
+                    <button onClick={() => setDeadline("")} disabled={busy} className="text-xs text-gray-400 hover:text-white underline">Clear</button>
+                }
+                <p className="w-full text-xs text-gray-500">
+                    {hasItems
+                        ? `Due by the end of that day. If the checkboxes aren't all ticked by then, ${account.besaName || "they"} and the root account get an email.`
+                        : "Add a checkbox first - the deadline is for getting the checkboxes done."}
+                </p>
+            </div>
             {error && <p className="text-red-400 text-xs">{error}</p>}
             <div className="flex flex-wrap gap-2 mt-1">
                 <button onClick={() => void save()} disabled={busy || (!description.trim() && !items.some(i => i.text.trim()))}
