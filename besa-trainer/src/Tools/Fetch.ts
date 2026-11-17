@@ -76,7 +76,7 @@ export type TaskNote = {
     description: string
     items: {id: string, text: string, done: boolean, doneAt: string | null}[]
     updatedAt: string | null
-    deadline: string | null // "YYYY-MM-DD" - the checklist is due by the end of that day (Pacific)
+    deadline: string | null // "YYYY-MM-DD" (due by the end of that day) or "YYYY-MM-DDTHH:MM", Pacific
     overdue: boolean // the deadline has passed and the checklist isn't finished
 }
 

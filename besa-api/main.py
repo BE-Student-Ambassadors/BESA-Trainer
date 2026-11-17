@@ -403,7 +403,8 @@ def assignTasks(request_data: AssignTasksRequest, lead_user: dict = Depends(requ
 # items are an optional checklist the member ticks off - at the kiosk (Current Sessions) or on their Profile - and
 # the leads see that progress on Assign Tasks. A note stays until a lead removes it. Ticking the last checkbox
 # emails every BESA Lead and root account (see _notify_checklist_done).
-# A note with checkboxes can have a deadline (a Pacific date, due by the end of that day). If the checklist still
+# A note with checkboxes can have a deadline: a Pacific date, due by the end of that day, or a date and time (Pacific)
+# when the lead picks one too. If the checklist still
 # isn't finished once it's passed, the task_deadline_alerts scheduled function emails the member and the root
 # account, once per deadline (deadlineAlertSentFor remembers which one). Moving the deadline re-arms it.
 TASK_NOTE_DESCRIPTION_MAX_LENGTH = 1000
@@ -411,9 +412,22 @@ TASK_NOTE_ITEM_MAX_LENGTH = 200
 TASK_NOTE_MAX_ITEMS = 20
 
 
-#the moment a "YYYY-MM-DD" deadline runs out: the end of that day, Pacific
+#the moment a deadline runs out, Pacific: "YYYY-MM-DDTHH:MM" at that time, a plain "YYYY-MM-DD" at the end of that day
 def _deadline_end(deadline: str) -> datetime:
+    if "T" in deadline:
+        return datetime.fromisoformat(deadline).replace(tzinfo=PACIFIC)
     return datetime.combine(date_cls.fromisoformat(deadline) + timedelta(days=1), datetime.min.time(), tzinfo=PACIFIC)
+
+
+#"Friday, November 21" or "Friday, November 21 at 3:30 PM"
+def _deadline_text(deadline: str) -> str:
+    if "T" not in deadline:
+        return f"the end of {date_cls.fromisoformat(deadline).strftime('%A, %B %-d')}"
+    return _deadline_end(deadline).strftime("%A, %B %-d at %-I:%M %p")
+
+
+#"YYYY-MM-DD" or "YYYY-MM-DDTHH:MM" - anything else (seconds, a time zone) isn't something the editor sends
+DEADLINE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?")
 
 
 def _note_finished(note: dict) -> bool:
@@ -453,7 +467,7 @@ class SetTaskNoteRequest(BaseModel):
     task: str
     description: str = ""
     items: list[TaskNoteItem] = []
-    deadline: str | None = None  # "YYYY-MM-DD", due by the end of that day (Pacific); needs at least one checkbox
+    deadline: str | None = None  # "YYYY-MM-DD" (end of that day) or "YYYY-MM-DDTHH:MM", Pacific; needs at least one checkbox
 
 
 #BESA Lead (or root admin) - writes (or, when it's left empty, removes) the note on one member's task
@@ -487,7 +501,9 @@ def setTaskNote(request_data: SetTaskNoteRequest, lead_user: dict = Depends(requ
     deadline = (request_data.deadline or "").strip() or None
     if deadline:
         try:
-            date_cls.fromisoformat(deadline)
+            if not DEADLINE_PATTERN.fullmatch(deadline):
+                raise ValueError
+            _deadline_end(deadline)
         except ValueError:
             raise HTTPException(status_code=400, detail="That deadline isn't a valid date.")
         if not items:
@@ -562,12 +578,12 @@ OTHER_TASK = "Other"
 #to the member and the root account(s), once a note's deadline has passed with its checklist unfinished
 def _notify_deadline_missed(uid: str, besa_name, task: str, note: dict):
     name = besa_name or "A BESA"
-    due = date_cls.fromisoformat(note["deadline"]).strftime("%A, %B %-d")
+    due = _deadline_text(note["deadline"])
     items = [i for i in note.get("items") or [] if isinstance(i, dict)]
     left = "\n".join(f"- [ ] {i.get('text') or ''}" for i in items if not i.get("done"))
     done = len([i for i in items if i.get("done")])
     description = f'Note: "{note["description"]}"\n\n' if note.get("description") else ""
-    body = (f"The {task} checklist for {name} was due by the end of {due}, and {done} of {len(items)} items are checked off.\n\n"
+    body = (f"The {task} checklist for {name} was due by {due}, and {done} of {len(items)} items are checked off.\n\n"
             f"{description}Still to do:\n{left}\n\n"
             "Items can be checked off at the kiosk (Current Sessions) or on Profile. A BESA Lead can change the deadline on Assign Tasks.")
     _send_alert_email(f"{name}: the {task} deadline has passed", body, lambda: {uid} | _uids_of_type("root"),
@@ -4021,10 +4037,10 @@ def break_end_alerts(event: scheduler_fn.ScheduledEvent) -> None:
             print(f"api warm-up ping failed: {e}")
 
 
-#emails the member and root about lead-note deadlines that passed with the checklist unfinished. Deadlines end at
-#midnight, so this runs each morning and covers the day before (and anything an earlier run missed).
+#emails the member and root about lead-note deadlines that passed with the checklist unfinished. A deadline can be
+#any time of day, so this checks every 15 minutes (and catches anything an earlier run missed).
 @scheduler_fn.on_schedule(
-    schedule="0 8 * * *",
+    schedule="every 15 minutes",
     timezone="America/Los_Angeles",
     secrets=["BREAK_ALERT_GMAIL_ADDRESS", "BREAK_ALERT_GMAIL_APP_PASSWORD"],
 )

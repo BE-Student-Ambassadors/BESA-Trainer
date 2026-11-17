@@ -2,9 +2,13 @@ import { useState, type JSX, type ReactNode } from "react"
 import { FaChevronDown, FaRegStickyNote } from "react-icons/fa"
 import type { TaskNote } from "../Tools/Fetch"
 
-//"Due Fri, Nov 21" - the date is a plain calendar day, so it's read at local noon to keep it on the right day
+//"Fri, Nov 21" or "Fri, Nov 21, 3:30 PM" - the deadline is a Pacific wall-clock date (and time), shown as written.
+//A plain date is read at noon so it stays on the right day.
 function formatDeadline(deadline: string): string {
-    return new Date(`${deadline}T12:00:00`).toLocaleDateString(undefined, {weekday: "short", month: "short", day: "numeric"})
+    const [day, time] = deadline.split("T")
+    const date = new Date(`${day}T${time || "12:00"}:00`)
+    const dayText = date.toLocaleDateString(undefined, {weekday: "short", month: "short", day: "numeric"})
+    return time ? `${dayText}, ${date.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})}` : dayText
 }
 
 //the deadline chip on a note's header: red once it's passed unfinished, green once the checklist is done
