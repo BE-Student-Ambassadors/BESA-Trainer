@@ -173,6 +173,14 @@ function ClockInPanel({onClockedIn}: {onClockedIn: () => void}) {
         <section className="bg-be-navy rounded-2xl p-6 border-t-4 border-be-orange shadow-md">
             <h2 className="text-2xl font-bold tracking-wide mb-4 text-center">Clock In</h2>
             <OfficeTimeDisclaimer className="mb-4 text-center"/>
+            {/* Clock In used to list every activity - this tells people where the rest went while they get used to it */}
+            <div className="mb-4 rounded-xl border border-be-yellow/60 bg-be-yellow/10 p-3 text-sm text-center">
+                <p className="font-bold text-be-yellow">New: Clock In only shows the tasks your BESA Leads gave you</p>
+                <p className="text-be-light-gray mt-1">
+                    Doing something else? Pick <span className="text-white font-semibold">Other</span>. All the regular tasks are
+                    still there when you <span className="text-white font-semibold">clock out</span>, where you say what you actually worked on.
+                </p>
+            </div>
             <label className="block text-sm text-be-light-gray mb-1 font-medium">Enter School Id</label>
             <input
                 value={studentId}
