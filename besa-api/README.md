@@ -20,7 +20,9 @@ The emails are sent from a Gmail account. Setup:
 
 When a member sends hours requests from their Profile, the root account gets one email listing each time range, what was worked on, and the reason. The root admin approves or denies them in Profile under Hours Requests.
 
-When a BESA Lead leaves a note with checkboxes on Assign Tasks, they can give it a deadline: a date, and optionally a time. Without a time the checklist is due by the end of that day. Times are Pacific. If any box is still unticked after that, the `task_deadline_alerts` scheduled function (every 15 minutes) emails the member and the root account. Each deadline is emailed about once, and moving the deadline resets it. A late note shows as overdue on the kiosk, on Profile and on Assign Tasks.
+When a BESA Lead leaves a note with checkboxes on Assign Tasks, they can give it a deadline: a date, and optionally a time. Without a time the checklist is due by the end of that day. Times are Pacific. If any box is still unticked after that, the `task_deadline_alerts` scheduled function (every 5 minutes) emails the member and the root account. Each deadline is emailed about once, and moving the deadline resets it. A late note shows as overdue on the kiosk, on Profile and on Assign Tasks.
+
+When a BESA Lead assigns someone a task on Assign Tasks, or gives a task's note a new priority (High, Medium or Low) or deadline, that person gets an email with the task's priority, deadline, note and checklist. Leads usually assign a task and then write its note, so the email waits until 5 minutes after the lead's last change to that person's tasks. Several changes go out as one email. The same `task_deadline_alerts` function sends these, checking every 5 minutes.
 
 Every email goes to the address each account signs in with (from Firebase Auth).
 

@@ -11,6 +11,18 @@ function formatDeadline(deadline: string): string {
     return time ? `${dayText}, ${date.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})}` : dayText
 }
 
+const PRIORITY_STYLES = {high: "bg-orange-600 text-black", medium: "bg-amber-800/70 text-amber-100", low: "bg-gray-700 text-gray-300"}
+
+//the priority chip on a note's header - nothing on old notes that never got one
+export function PriorityBadge({note}: {note: TaskNote}): JSX.Element | null {
+    if (!note.priority) return null
+    return (
+        <span className={"text-[11px] px-2 py-0.5 rounded-full font-semibold whitespace-nowrap " + PRIORITY_STYLES[note.priority]}>
+            {note.priority[0].toUpperCase() + note.priority.slice(1)} priority
+        </span>
+    )
+}
+
 //the deadline chip on a note's header: red once it's passed unfinished, green once the checklist is done
 export function DeadlineBadge({note}: {note: TaskNote}): JSX.Element | null {
     if (!note.deadline) return null
@@ -52,6 +64,7 @@ export default function TaskNoteCard({note, defaultOpen = false, onToggle}: {
                 <FaRegStickyNote className="text-amber-400 shrink-0" size={12}/>
                 <span className="font-semibold text-amber-200">{note.task}</span>
                 <span className="text-xs text-gray-400">Lead's note</span>
+                <PriorityBadge note={note}/>
                 <DeadlineBadge note={note}/>
                 {note.items.length > 0 &&
                     <span className={"text-xs tabular-nums ml-auto " + (done === note.items.length ? "text-green-400" : "text-gray-300")}>

@@ -3,7 +3,7 @@ import { MoonLoader } from "react-spinners"
 import { FaPlus, FaRegStickyNote, FaTrash } from "react-icons/fa"
 import Header from "../Components/Header"
 import TaskNoteCard from "../Components/TaskNoteCard"
-import { addActivityType, assignTasks, getActivityTypes, getBesaAccounts, setTaskNote, type BesaAccount, type TaskNote } from "../Tools/Fetch"
+import { addActivityType, assignTasks, getActivityTypes, getBesaAccounts, setTaskNote, type BesaAccount, type TaskNote, type TaskPriority } from "../Tools/Fetch"
 
 const TASK_NAME_MAX_LENGTH = 40 // same cap as the backend's TASK_NAME_MAX_LENGTH
 //same caps as the backend's TASK_NOTE_* limits
@@ -92,7 +92,9 @@ export default function AssignTasks() {
                 <p className="text-gray-400 text-sm mb-6">
                     Choose what each BESA should work on - at the kiosk's Clock In, the tasks assigned to someone here are highlighted as
                     "Lead recommended", and those are the only tasks they can pick there (anything else goes under Other). BESA Leads can have tasks too, including your own.
-                    To set a deadline, open a task's note under someone's name, add checkboxes, and pick a date (and a time, if you want).
+                    To set a priority or deadline, open a task's note under someone's name - a deadline needs checkboxes, plus a date
+                    (and a time, if you want). People are emailed about a task when it's assigned to them or its priority or deadline
+                    changes, a few minutes after your last edit, so several changes go out as one email.
                 </p>
 
                 {accounts === null || tasks === null ?
@@ -208,14 +210,14 @@ function MemberTaskNotes({account, tasks, onSaved}: {account: BesaAccount, tasks
                         <div className="flex-1 min-w-0"><TaskNoteCard note={note}/></div>
                         <button onClick={() => setEditing(task)} disabled={editing !== null}
                             className="text-xs px-3 py-2 rounded-full bg-gray-700 hover:bg-gray-600 disabled:opacity-40 shrink-0">
-                            {note.deadline ? "Edit" : "Edit / Set Deadline"}
+                            {note.deadline && note.priority ? "Edit" : "Edit / Set Priority & Deadline"}
                         </button>
                     </div>
                 )
             })}
             {withoutNote.length > 0 && editing === null &&
                 <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-xs text-gray-400">Add a note or deadline:</span>
+                    <span className="text-xs text-gray-400">Add a note, priority or deadline:</span>
                     {withoutNote.map(task => (
                         <button key={task} onClick={() => setEditing(task)}
                             className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-gray-600 text-gray-300 hover:bg-gray-700">
@@ -247,6 +249,7 @@ function TaskNoteEditor({account, task, note, onDone}: {
     const [deadlineDate, setDeadlineDate] = useState(note?.deadline?.split("T")[0] || "")
     const [deadlineTime, setDeadlineTime] = useState(note?.deadline?.split("T")[1] || "")
     const deadline = deadlineDate ? (deadlineTime ? `${deadlineDate}T${deadlineTime}` : deadlineDate) : ""
+    const [priority, setPriority] = useState<TaskPriority>(note?.priority || "medium")
     const [busy, setBusy] = useState(false)
     const hasItems = items.some(i => i.text.trim())
     const [error, setError] = useState("")
@@ -261,7 +264,7 @@ function TaskNoteEditor({account, task, note, onDone}: {
         setError("")
         const result = await setTaskNote(account.uid, task, remove ? "" : description,
             remove ? [] : items.filter(i => i.text.trim()).map(i => ({id: i.id, text: i.text})),
-            remove || !items.some(i => i.text.trim()) ? null : deadline || null)
+            remove || !items.some(i => i.text.trim()) ? null : deadline || null, remove ? null : priority)
         setBusy(false)
         if (result.success) onDone(result.taskNotes || [])
         else setError(result.detail || "Couldn't save the note.")
@@ -295,6 +298,17 @@ function TaskNoteEditor({account, task, note, onDone}: {
                     <FaPlus size={9}/> Add checkbox
                 </button>
             }
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-gray-300">Priority</span>
+                {(["high", "medium", "low"] as const).map(level => (
+                    <button key={level} type="button" onClick={() => setPriority(level)} disabled={busy} aria-pressed={priority === level}
+                        className={"text-xs px-3 py-1 rounded-full font-semibold disabled:opacity-40 " +
+                            (priority === level ? (level === "high" ? "bg-orange-600 text-black" : level === "medium" ? "bg-amber-500 text-black" : "bg-gray-300 text-black")
+                                : "bg-gray-700 text-gray-300 hover:bg-gray-600")}>
+                        {level[0].toUpperCase() + level.slice(1)}
+                    </button>
+                ))}
+            </div>
             {/* always shown so leads can find it - a deadline needs something to finish, so it unlocks once there's a checkbox */}
             <div className="flex flex-wrap items-center gap-2 rounded-lg bg-gray-800/70 p-2">
                 <label htmlFor={`deadline-${task}`} className="text-xs font-semibold text-gray-300">Deadline (optional)</label>

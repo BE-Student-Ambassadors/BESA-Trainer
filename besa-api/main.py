@@ -395,11 +395,94 @@ def assignTasks(request_data: AssignTasksRequest, lead_user: dict = Depends(requ
     if unknown:
         raise HTTPException(status_code=400, detail=f'"{unknown[0]}" isn\'t on the task list anymore - reload the page.')
     target_ref.update({"assignedTasks": tasks})
+    old_tasks = set((target_doc.to_dict() or {}).get("assignedTasks") or [])
+    for task in tasks:
+        if task not in old_tasks:
+            _queue_task_email(target_ref, target_doc.to_dict() or {}, task, "new")
     return {"success": True, "assignedTasks": tasks}
 
 
+# ---- Task emails (telling a member what they've been given) ----
+# Assigning someone a task, or setting/changing a note's deadline or priority, queues that task in pendingTaskEmail
+# on their user doc ({tasks: {task: "new" | "updated"}, updatedAt}). Leads usually assign a task and then write its
+# note, so nothing goes out until the queue has been quiet for TASK_EMAIL_QUIET_PERIOD; then the task_alerts
+# scheduled function sends the member one email covering every queued task as it stands at that point (its priority,
+# deadline, note and checklist). Tasks unassigned in the meantime are left out.
+TASK_EMAIL_QUIET_PERIOD = timedelta(minutes=5)
+TASK_PRIORITIES = ("high", "medium", "low")
+SITE_URL = os.getenv("SITE_URL", "https://besa-trainer.vercel.app")
+
+
+def _queue_task_email(target_ref, data: dict, task: str, kind: str):
+    queued = ((data.get("pendingTaskEmail") or {}).get("tasks") or {}).get(task)
+    #a task that's new to them stays "new" even if its note is then written
+    kind = "new" if queued == "new" else kind
+    try:
+        target_ref.set({"pendingTaskEmail": {"tasks": {task: kind}, "updatedAt": datetime.now(PACIFIC)}}, merge=True)
+    except Exception as e:
+        print(f"Couldn't queue the {task} email: {e}")
+
+
+def _task_email_section(task: str, kind: str, note: dict) -> str:
+    lines = [f"{task}{' (updated)' if kind == 'updated' else ''}"]
+    priority = note.get("priority")
+    lines.append(f"  Priority: {priority.capitalize() if priority else 'Not set'}")
+    lines.append(f"  Deadline: {_deadline_text(note['deadline']) if note.get('deadline') else 'None'}")
+    if note.get("description"):
+        lines.append(f"  Note: {note['description']}")
+    items = [i for i in note.get("items") or [] if isinstance(i, dict)]
+    if items:
+        lines.append("  To do:")
+        lines += [f"    - [{'x' if i.get('done') else ' '}] {i.get('text') or ''}" for i in items]
+    return "\n".join(lines)
+
+
+#everyone whose queued task changes have been quiet long enough - each queue is cleared in a transaction before its
+#email goes out, so an overlapping run can't send it twice
+def _send_task_emails():
+    db = firestore.client()
+    now = datetime.now(PACIFIC)
+    for u in _users_ref(db).where(filter=FieldFilter("pendingTaskEmail.updatedAt", "<=", now - TASK_EMAIL_QUIET_PERIOD)).stream():
+
+        @firestore.transactional
+        def claim(transaction, ref=u.reference):
+            fresh = ref.get(transaction=transaction).to_dict() or {}
+            pending = fresh.get("pendingTaskEmail") or {}
+            if not pending.get("updatedAt") or pending["updatedAt"] > now - TASK_EMAIL_QUIET_PERIOD:
+                return None
+            transaction.update(ref, {"pendingTaskEmail": firestore.DELETE_FIELD})
+            return fresh, pending.get("tasks") or {}
+
+        try:
+            claimed = claim(db.transaction())
+            if not claimed:
+                continue
+            data, queued = claimed
+            assigned = data.get("assignedTasks") or []
+            notes = data.get("taskNotes") if isinstance(data.get("taskNotes"), dict) else {}
+            order = {p: i for i, p in enumerate(TASK_PRIORITIES)}
+            tasks = sorted((t for t in queued if t in assigned),
+                           key=lambda t: (order.get((notes.get(t) or {}).get("priority"), len(order)), t))
+            if not tasks:
+                continue
+            name = data.get("besaName") or "there"
+            new = [t for t in tasks if queued[t] == "new"]
+            if len(tasks) == 1:
+                subject = f"{'New task' if new else 'Task updated'}: {tasks[0]}"
+            else:
+                subject = f"{len(new)} new task{'s' if len(new) != 1 else ''} from the BESA Leads" if len(new) == len(tasks) else "Your BESA tasks were updated"
+            sections = "\n\n".join(_task_email_section(t, queued[t], notes.get(t) if isinstance(notes.get(t), dict) else {}) for t in tasks)
+            body = (f"Hi {name},\n\nA BESA Lead {'assigned you' if new else 'updated'} the following:\n\n{sections}\n\n"
+                    f"See all your tasks and check things off on your BESA Trainer dashboard: {SITE_URL}\n"
+                    "Check items off at the kiosk while you're clocked in so they count toward that day's grade.")
+            _send_alert_email(subject, body, lambda uid=u.id: {uid}, f"Task-assigned ({name})")
+        except Exception as e:
+            print(f"Task email for {u.id} failed: {e}")
+
+
 # ---- Task notes (guidance a BESA Lead leaves on one member's task, for the next time they clock in) ----
-# taskNotes on the member's user doc: {task: {description, items: [{id, text, done, doneAt}], updatedAt}}. The
+# taskNotes on the member's user doc: {task: {description, items: [{id, text, done, doneAt}], priority, deadline,
+# updatedAt}}. priority is "high", "medium" or "low" (or unset on notes from before priorities). The
 # items are an optional checklist the member ticks off - at the kiosk (Current Sessions) or on their Profile - and
 # the leads see that progress on Assign Tasks. A note stays until a lead removes it. Ticking the last checkbox
 # emails every BESA Lead and root account (see _notify_checklist_done).
@@ -449,6 +532,7 @@ def _serialize_task_notes(notes, tasks: list | None = None) -> list:
         "task": task,
         "description": notes[task].get("description") or "",
         "deadline": notes[task].get("deadline") or None,
+        "priority": notes[task].get("priority") if notes[task].get("priority") in TASK_PRIORITIES else None,
         "overdue": _note_overdue(notes[task]),
         "items": [{"id": i.get("id"), "text": i.get("text") or "", "done": bool(i.get("done")),
                    "doneAt": i["doneAt"].isoformat() if i.get("doneAt") else None}
@@ -468,6 +552,7 @@ class SetTaskNoteRequest(BaseModel):
     description: str = ""
     items: list[TaskNoteItem] = []
     deadline: str | None = None  # "YYYY-MM-DD" (end of that day) or "YYYY-MM-DDTHH:MM", Pacific; needs at least one checkbox
+    priority: Literal["high", "medium", "low"] | None = None
 
 
 #BESA Lead (or root admin) - writes (or, when it's left empty, removes) the note on one member's task
@@ -513,7 +598,12 @@ def setTaskNote(request_data: SetTaskNoteRequest, lead_user: dict = Depends(requ
             raise HTTPException(status_code=400, detail="The deadline can't be in the past.")
 
     if description or items:
+        priority = request_data.priority
+        #a first note, or a new deadline or priority, is worth telling them about
+        if not old_note or deadline != old_note.get("deadline") or priority != old_note.get("priority"):
+            _queue_task_email(target_ref, data, task, "updated")
         notes[task] = {"description": description, "items": items, "updatedAt": datetime.now(PACIFIC), "deadline": deadline,
+                       "priority": priority,
                        #still announced only if it's the same deadline that was already emailed about
                        "deadlineAlertSentFor": old_note.get("deadlineAlertSentFor") if deadline and old_note.get("deadlineAlertSentFor") == deadline else None}
     else:
@@ -4037,15 +4127,19 @@ def break_end_alerts(event: scheduler_fn.ScheduledEvent) -> None:
             print(f"api warm-up ping failed: {e}")
 
 
-#emails the member and root about lead-note deadlines that passed with the checklist unfinished. A deadline can be
-#any time of day, so this checks every 15 minutes (and catches anything an earlier run missed).
+#emails the member and root about lead-note deadlines that passed with the checklist unfinished, and tells members
+#about tasks they've been given (see _send_task_emails). A deadline can be any time of day, so this checks every
+#5 minutes (and catches anything an earlier run missed).
 @scheduler_fn.on_schedule(
-    schedule="every 15 minutes",
+    schedule="every 5 minutes",
     timezone="America/Los_Angeles",
     secrets=["BREAK_ALERT_GMAIL_ADDRESS", "BREAK_ALERT_GMAIL_APP_PASSWORD"],
 )
 def task_deadline_alerts(event: scheduler_fn.ScheduledEvent) -> None:
-    _send_deadline_alerts()
+    try:
+        _send_deadline_alerts()
+    finally:
+        _send_task_emails()
 
 
 #grades anything the kiosk didn't get to (closed mid-flow) and retries days the AI failed on

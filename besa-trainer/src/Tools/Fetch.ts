@@ -78,12 +78,16 @@ export type TaskNote = {
     updatedAt: string | null
     deadline: string | null // "YYYY-MM-DD" (due by the end of that day) or "YYYY-MM-DDTHH:MM", Pacific
     overdue: boolean // the deadline has passed and the checklist isn't finished
+    priority: TaskPriority | null // null on notes from before priorities
 }
 
+export type TaskPriority = "high" | "medium" | "low"
+
 //BESA Lead only - writes the note on one member's task (an empty description and no checkboxes removes it).
-//Checkboxes that keep their id keep whether they're checked. A deadline needs at least one checkbox.
-export function setTaskNote(targetUid: string, task: string, description: string, items: {id?: string, text: string}[], deadline: string | null = null): Promise<{success: boolean, detail?: string, taskNotes?: TaskNote[]}> {
-    return kioskPost("task-notes/set", {targetUid, task, description, items, deadline})
+//Checkboxes that keep their id keep whether they're checked. A deadline needs at least one checkbox. A new note, or
+//a new deadline or priority, emails them about it (a few minutes later, so quick edits go out as one email).
+export function setTaskNote(targetUid: string, task: string, description: string, items: {id?: string, text: string}[], deadline: string | null = null, priority: TaskPriority | null = null): Promise<{success: boolean, detail?: string, taskNotes?: TaskNote[]}> {
+    return kioskPost("task-notes/set", {targetUid, task, description, items, deadline, priority})
 }
 
 //ticks one checkbox - the root kiosk passes whose note it is; a member checking their own leaves targetUid out

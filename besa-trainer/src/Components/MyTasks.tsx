@@ -12,12 +12,16 @@ function deadlineMs(deadline: string): number {
 
 const DUE_SOON_MS = 3 * 24 * 60 * 60 * 1000
 
-//overdue first, then the soonest deadline, then notes without one (unfinished before finished)
+const PRIORITY_ORDER = {high: 0, medium: 1, low: 2}
+
+//overdue first, unfinished before finished, then highest priority, then the soonest deadline
 function sortNotes(notes: TaskNote[]): TaskNote[] {
     const finished = (n: TaskNote) => n.items.length > 0 && n.items.every(i => i.done)
+    const rank = (n: TaskNote) => n.priority ? PRIORITY_ORDER[n.priority] : 3
     return [...notes].sort((a, b) =>
         Number(b.overdue) - Number(a.overdue)
         || Number(finished(a)) - Number(finished(b))
+        || rank(a) - rank(b)
         || (a.deadline ? deadlineMs(a.deadline) : Infinity) - (b.deadline ? deadlineMs(b.deadline) : Infinity)
         || a.task.localeCompare(b.task))
 }
