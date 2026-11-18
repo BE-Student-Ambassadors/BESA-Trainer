@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetSt
 import type { Fill, Floor, Marker, Script, SuccessResponse } from "../../Tools/types";
 import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import { db } from "../../Tools/firestore";
-import { CreateScript, getScript, reconcileProgress } from "../../Tools/Fetch";
+import { CreateScript, getScript, reconcileProgress, type ScriptGenerateOptions } from "../../Tools/Fetch";
 import { getStorage, ref, uploadBytes } from "firebase/storage";
 import { getVtt, type Line, BLANK_PLACEHOLDER, locateBlankRanges } from "../../Tools/ScriptDecoder";
 import { Loading } from "./Edit";
@@ -132,6 +132,8 @@ export default function EditScript ({selected, setFloor} : {selected: Floor, set
     const [aiLoading, setAILoading] = useState(false)
     const [changeLoading, setChangeLoading] = useState(false)
     const [sectionTagErrors, setSectionTagErrors] = useState<string[]>([])
+    const [generateOptions, setGenerateOptions] = useState<ScriptGenerateOptions>({removeFillers: true, autoSections: true, autoHighlights: true})
+    const [generateMessage, setGenerateMessage] = useState("")
 
     //fill (highlighter) editor mode
     const [fill, setFill] = useState<Fill | null>(null)
@@ -221,11 +223,23 @@ export default function EditScript ({selected, setFloor} : {selected: Floor, set
     async function handleGenerate(aiModel: "chirp" | "gemini") {
         if (script) {
             setAILoading(true)
-            const response: SuccessResponse | void = await CreateScript(selected.id, script?.id, aiModel)
-            if (response) {
+            setGenerateMessage("")
+            const response: SuccessResponse | void = await CreateScript(selected.id, script?.id, aiModel, generateOptions)
+            if (response?.success) {
+                //the new sections and highlights have to be in place before the text, or the stale-highlight
+                //cleanup above would throw the fresh highlights away against the old text
+                const fillSnap = await getDoc(doc(db, "training_data", "data_root", "fills", selected.id))
+                setFill(fillSnap.exists() ? fillSnap.data() as Fill : null)
+                if (response.markers) {
+                    const markers = response.markers
+                    setFloor(prev => prev ? {...prev, markers} : prev)
+                }
                 const newText = await getScript(script.src) || ""
                 setTextArea(newText)
                 setInitialScript(newText)
+                setGenerateMessage(response.message || "Script generated.")
+            } else {
+                setGenerateMessage("Generating the script failed. Please try again.")
             }
             setAILoading(false)
         }
@@ -445,6 +459,21 @@ export default function EditScript ({selected, setFloor} : {selected: Floor, set
                     <span className="block text-center text-sm">Warning! Will reset file</span>
                 </div>
                 </div>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-2 text-sm">
+                    <span className="text-gray-200">When generating:</span>
+                    {([
+                        ["removeFillers", "Remove filler words (um, uh, like)"],
+                        ["autoSections", "Split into sections (replaces current sections)"],
+                        ["autoHighlights", "Make highlights (replaces current highlights)"],
+                    ] as const).map(([key, label]) => (
+                        <label key={key} className="flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" checked={generateOptions[key]}
+                                onChange={({target}) => setGenerateOptions(prev => ({...prev, [key]: target.checked}))}/>
+                            {label}
+                        </label>
+                    ))}
+                </div>
+                {generateMessage && <p className="text-sm text-amber-300 mt-1">{generateMessage}</p>}
                 {fillMode &&
                     <p className="text-sm text-gray-200 mt-2">
                         Highlight a piece of a sentence to turn it into a fill-in-the-blank question. Click on an existing highlight to remove it.

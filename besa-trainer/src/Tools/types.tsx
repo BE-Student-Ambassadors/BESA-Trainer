@@ -109,6 +109,8 @@ export type SuccessResponse = {
     success: boolean,
     floorId: string,
     messsage: string
+    message?: string // what the backend actually sends - make-script's summary of what it did
+    markers?: Marker[] | null // make-script: the sections it made, null if it left them alone
 }
 
 export type FloorCode = "f1" | "f2" | "f3" | "b" | "e" | ""

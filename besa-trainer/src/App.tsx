@@ -10,6 +10,7 @@ import ReadScript from './Pages/ReadScript'
 import MyProgress from './Pages/Progress'
 import { createPlayer, videoFeatures } from '@videojs/react'
 import GettingStarted from './Components/SectionEditor/GettingStarted'
+import MasterScriptEditor from './Components/SectionEditor/MasterScriptEditor'
 import QuestionSimulator from './Pages/QuestionSimulator'
 import QuestionsEditor from './Pages/QuestionsEditor'
 import QuestionsProgress from './Pages/QuestionsProgress'
@@ -41,6 +42,7 @@ const router = createBrowserRouter(createRoutesFromChildren(
     <Route path='/section-editor' element={<RequireAccess level="admin"><SectionEditor/></RequireAccess>}>
       <Route path='getting-started' element={<GettingStarted/>}/>
       <Route path='edit' element={<Edit/>}/>
+      <Route path='master-script' element={<MasterScriptEditor/>}/>
     </Route>,
     <Route path='/simulator/:tour' element={<Player.Provider><Simulator/></Player.Provider>}>
       <Route path='general' element={<div></div>}/>

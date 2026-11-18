@@ -187,6 +187,7 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/presentations.readonly",
     "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",  # the Section Editor's master script import
 ]
 _google_token = {"value": None, "expires_at": 0.0}
 
@@ -220,6 +221,54 @@ def _google_get(url: str, params: dict | None = None) -> dict:
         raise SourceUnavailable(f"Google said {response.status_code} - does the connected account have access to this?")
     response.raise_for_status()
     return response.json()
+
+
+#a Google Doc as simple blocks for the master script editor: {"type": "p" | "li" | "heading", "runs": [{text, bold, italic}]}.
+#Read through the connected account first; if it can't (not connected, no access, or connected before the Docs scope
+#was added), fall back to the doc's public plain-text export, which works for "anyone with the link" docs.
+def google_doc_blocks(doc_id: str) -> dict:
+    try:
+        doc = _google_get(f"https://docs.googleapis.com/v1/documents/{doc_id}")
+        return {"title": doc.get("title", ""), "blocks": _doc_body_blocks(doc), "formatted": True}
+    except (SourceUnavailable, requests.RequestException) as e:
+        reason = str(e)
+    response = requests.get(f"https://docs.google.com/document/d/{doc_id}/export", params={"format": "txt"}, timeout=REQUEST_TIMEOUT)
+    if not response.ok or "text/plain" not in response.headers.get("Content-Type", ""):
+        raise SourceUnavailable(f"Couldn't read that doc. Share it with ucscbesa@ucsc.edu or set it to \"anyone with the link\". ({reason})")
+    blocks = []
+    for line in response.content.decode("utf-8-sig").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        bullet = re.match(r"^[*\u2022\u25cf\u25cb\u25aa-]\s+(.*)$", text)
+        blocks.append({"type": "li" if bullet else "p", "runs": [{"text": bullet.group(1) if bullet else text, "bold": False, "italic": False}]})
+    return {"title": "", "blocks": blocks, "formatted": False}
+
+
+def _doc_body_blocks(doc: dict) -> list[dict]:
+    blocks = []
+    for element in doc.get("body", {}).get("content", []):
+        paragraph = element.get("paragraph")
+        if not paragraph:
+            continue  # tables, section breaks and the like aren't script
+        runs = []
+        for part in paragraph.get("elements", []):
+            run = part.get("textRun")
+            if not run:
+                continue
+            text = run.get("content", "").replace("\n", " ").replace("\u000b", " ")
+            if not text.strip():
+                if runs:
+                    runs[-1]["text"] += text
+                continue
+            style = run.get("textStyle", {})
+            runs.append({"text": text, "bold": bool(style.get("bold")), "italic": bool(style.get("italic"))})
+        if not "".join(r["text"] for r in runs).strip():
+            continue
+        style_type = paragraph.get("paragraphStyle", {}).get("namedStyleType", "NORMAL_TEXT")
+        kind = "heading" if style_type.startswith("HEADING") or style_type in ("TITLE", "SUBTITLE") else "li" if paragraph.get("bullet") else "p"
+        blocks.append({"type": kind, "runs": runs})
+    return blocks
 
 
 def gmail_sent(since: datetime, until: datetime) -> dict:

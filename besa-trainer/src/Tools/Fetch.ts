@@ -153,7 +153,14 @@ export async function setAdminStatus(targetUid: string, admin: boolean): Promise
     }
 }
 
-export async function CreateScript(floorId: string, scriptId: string, aiModel: "chirp" | "gemini" = "chirp") {
+export type ScriptGenerateOptions = {
+    removeFillers: boolean // takes out um/uh/filler "like" etc.
+    autoSections: boolean // replaces the floor's sections with AI-picked ones
+    autoHighlights: boolean // replaces the floor's highlights (fill blanks) with AI-picked ones
+}
+
+export async function CreateScript(floorId: string, scriptId: string, aiModel: "chirp" | "gemini" = "chirp",
+    options: ScriptGenerateOptions = {removeFillers: true, autoSections: true, autoHighlights: true}) {
     try {
         const auth = getAuth()
         const user = auth.currentUser
@@ -168,7 +175,7 @@ export async function CreateScript(floorId: string, scriptId: string, aiModel: "
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${idToken}`
             },
-            body: JSON.stringify({floorId, scriptId, aiModel})
+            body: JSON.stringify({floorId, scriptId, aiModel, ...options})
         })
         if (!response.ok) {
             console.error(response.status)
@@ -248,6 +255,31 @@ export async function reconcileProgress(floorId: string, markerTimes: number[]) 
         return await response.json() as SuccessResponse
     } catch (e) {
         console.error(e)
+    }
+}
+
+export type GoogleDocBlock = {
+    type: "p" | "li" | "heading"
+    runs: {text: string, bold: boolean, italic: boolean}[]
+}
+
+//the master script editor's Google Doc import - formatted is false when only the doc's plain text could be read
+export async function fetchGoogleDocScript(docUrl: string): Promise<{success: boolean, detail?: string, title?: string, blocks?: GoogleDocBlock[], formatted?: boolean}> {
+    try {
+        const user = getAuth().currentUser
+        if (!user) {
+            return {success: false, detail: "Not logged in."}
+        }
+        const response = await fetch(url + "google-doc-script", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "Authorization": `Bearer ${await user.getIdToken()}`},
+            body: JSON.stringify({docUrl})
+        })
+        const data = await response.json()
+        return response.ok ? data : {success: false, detail: data.detail || "Couldn't read that doc."}
+    } catch (e) {
+        console.error(e)
+        return {success: false, detail: "Couldn't reach the server."}
     }
 }
 
@@ -889,7 +921,7 @@ export async function getScript(scriptSrc: string): Promise<string | void> {
     try {
         // Firebase Storage download URLs already carry an access token (?alt=media&token=...).
         // Fetching without a custom Authorization header avoids an unnecessary CORS preflight.
-        const directResponse = await fetch(scriptSrc, { method: "GET" })
+        const directResponse = await fetch(scriptSrc, { method: "GET", cache: "no-store" }) // a script saved moments ago must not come back stale
         if (directResponse.ok) {
             return await directResponse.text()
         }

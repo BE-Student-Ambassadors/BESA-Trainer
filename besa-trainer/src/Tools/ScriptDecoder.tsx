@@ -81,41 +81,154 @@ export function linesToVtt(lines: Line[]): string {
     return "WEBVTT\n\n" + sorted.map(l => `${formatVttTime(l.start)} --> ${formatVttTime(l.end)}\n${l.text}\n`).join("\n")
 }
 
-//splits retyped section text into sentences - newlines are treated as hard breaks (a script author's own
-//paragraphing), and within a paragraph a sentence ends at ./!/? followed by whitespace and a capital/digit/quote.
-function splitIntoSentences(text: string): string[] {
-    return text
-        .split(/\n+/)
-        .flatMap(paragraph => paragraph.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/))
-        .map(s => s.trim())
-        .filter(Boolean)
+export function normalizeWord(word: string): string {
+    return word.toLowerCase().replace(/[^\w]/g, "")
 }
 
-function wordCount(text: string): number {
-    return text.split(/\s+/).filter(Boolean).length
+//word-level longest-common-subsequence between the new text and the original text - returns the matched
+//[newIndex, originalIndex] pairs in order. Blank (punctuation-only) words never match.
+export function alignWords(newWords: string[], originalWords: string[]): [number, number][] {
+    const n = newWords.length
+    const m = originalWords.length
+    const dp: Uint16Array[] = Array.from({length: n + 1}, () => new Uint16Array(m + 1))
+    for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+            dp[i][j] = newWords[i] && newWords[i] === originalWords[j]
+                ? dp[i + 1][j + 1] + 1
+                : Math.max(dp[i + 1][j], dp[i][j + 1])
+        }
+    }
+
+    const pairs: [number, number][] = []
+    let i = 0, j = 0
+    while (i < n && j < m) {
+        if (newWords[i] && newWords[i] === originalWords[j]) {
+            pairs.push([i, j])
+            i++
+            j++
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            i++
+        } else {
+            j++
+        }
+    }
+    return pairs
 }
 
-//distributes a section's fixed duration (taken from its original cues' span, ie. how long that part of the
-//video actually runs) across its retyped sentences, weighted by word count as a rough stand-in for how long
-//each one takes to say - so a longer sentence gets proportionally more of the section than a short one,
-//rather than every sentence (or the whole section) sharing one undifferentiated timestamp.
-function distributeTiming(sentences: string[], sectionStart: number, sectionDuration: number): Line[] {
-    const weights = sentences.map(s => Math.max(wordCount(s), 1))
-    const totalWeight = weights.reduce((a, b) => a + b, 0)
+export const SENTENCE_END = /[.!?]["')\]]*$/
+const CLAUSE_END = /[,;:]["')\]]*$/
 
-    let cursor = sectionStart
-    return sentences.map((text, i) => {
-        const isLast = i === sentences.length - 1
-        const start = cursor
-        const end = isLast ? sectionStart + sectionDuration : cursor + (weights[i] / totalWeight) * sectionDuration
-        cursor = end
-        return {start, end, text}
+//boundaries = [first, ...inner, end] token indices where each piece starts (end = one past the last token).
+//Nudges each inner boundary up to `window` words to the nearest sentence end (else clause end), so a piece doesn't
+//stop one word into the next sentence - never past its neighbouring boundaries. Mutates and returns boundaries.
+export function snapBoundariesToSentences(tokens: string[], boundaries: number[], window = 3): number[] {
+    for (let c = 1; c < boundaries.length - 1; c++) {
+        const b = boundaries[c]
+        if (b <= boundaries[0] || b >= boundaries[boundaries.length - 1] || SENTENCE_END.test(tokens[b - 1])) continue
+        const lo = Math.max(boundaries[c - 1] + 1, b - window)
+        const hi = Math.min(boundaries[c + 1] - 1, b + window)
+        for (const pattern of [SENTENCE_END, CLAUSE_END]) {
+            let best = -1
+            for (let cand = lo; cand <= hi; cand++) {
+                if (cand > 0 && pattern.test(tokens[cand - 1]) && (best === -1 || Math.abs(cand - b) < Math.abs(best - b))) {
+                    best = cand
+                }
+            }
+            if (best !== -1) {
+                boundaries[c] = best
+                break
+            }
+        }
+    }
+    return boundaries
+}
+
+//splits newly-typed (or transcribed) section text back across the section's ORIGINAL cues, so every cue keeps
+//its exact start/end time and the text is paced the way the video actually is:
+//  1. the new words are aligned to the original words (LCS), so wherever the trainee kept the original wording,
+//     that word lands in the same cue it was in before.
+//  2. words in between those anchors (rewording, additions) are placed by linear interpolation between the
+//     surrounding anchors, so they follow the local pace of the original speech.
+//  3. each cue boundary is then nudged a couple of words to the nearest sentence (or clause) end, so a cue
+//     doesn't end one word into the next sentence.
+//A cue that ends up with no words is folded into its neighbour's time span instead of leaving a gap.
+function retimeToOriginalCues(originalLines: Line[], newText: string): Line[] {
+    const cues = [...originalLines].sort((a, b) => a.start - b.start)
+    const tokens = newText.split(/\s+/).filter(Boolean)
+    if (tokens.length === 0 || cues.length === 0) {
+        return cues //nothing to place - keep the section as it was rather than blanking it
+    }
+    if (cues.length === 1) {
+        return [{...cues[0], text: tokens.join(" ")}]
+    }
+
+    const originalWords: string[] = []
+    const cueOfWord: number[] = []
+    cues.forEach((cue, c) => {
+        cue.text.split(/\s+/).filter(Boolean).forEach(w => {
+            originalWords.push(normalizeWord(w))
+            cueOfWord.push(c)
+        })
     })
+
+    //no words to align against - fall back to splitting by each cue's share of the section's duration.
+    const totalDuration = cues[cues.length - 1].end - cues[0].start
+    let positions: number[]
+    let positionToCue: (pos: number) => number
+    if (originalWords.length === 0) {
+        const cumulative = cues.map(c => (c.end - cues[0].start) / (totalDuration || 1))
+        positions = tokens.map((_, i) => (i + 0.5) / tokens.length)
+        positionToCue = pos => Math.max(0, cumulative.findIndex(edge => pos <= edge))
+    } else {
+        const newWords = tokens.map(normalizeWord)
+        //virtual anchors at both ends, so text before the first / after the last match is interpolated too.
+        const anchors: [number, number][] = [[-1, -1], ...alignWords(newWords, originalWords), [tokens.length, originalWords.length]]
+        positions = new Array(tokens.length)
+        for (let a = 0; a < anchors.length - 1; a++) {
+            const [ni, oi] = anchors[a]
+            const [nj, oj] = anchors[a + 1]
+            for (let k = ni + 1; k < nj; k++) {
+                positions[k] = oi + ((k - ni) / (nj - ni)) * (oj - oi)
+            }
+            if (a > 0) {
+                positions[ni] = oi
+            }
+        }
+        positionToCue = pos => cueOfWord[Math.min(originalWords.length - 1, Math.max(0, Math.round(pos)))]
+    }
+
+    //boundaries[c] = index of the first token belonging to cue c (monotonic, since positions are).
+    const assigned = positions.map(positionToCue)
+    const boundaries: number[] = [0]
+    for (let c = 1; c < cues.length; c++) {
+        let b = assigned.findIndex(cue => cue >= c)
+        if (b === -1) b = tokens.length
+        boundaries.push(Math.max(b, boundaries[c - 1]))
+    }
+    boundaries.push(tokens.length)
+
+    snapBoundariesToSentences(tokens, boundaries)
+
+    const result: Line[] = []
+    let pendingStart: number | null = null //start time of empty cue(s) waiting to be absorbed by the next filled cue
+    cues.forEach((cue, c) => {
+        const text = tokens.slice(boundaries[c], boundaries[c + 1]).join(" ")
+        if (!text) {
+            if (result.length > 0) {
+                result[result.length - 1].end = cue.end
+            } else if (pendingStart === null) {
+                pendingStart = cue.start
+            }
+            return
+        }
+        result.push({start: pendingStart ?? cue.start, end: cue.end, text})
+        pendingStart = null
+    })
+    return result
 }
 
-//replaces every cue within the given section with newly-timed cues built from the retyped text - split into
-//sentences and spread proportionally across the section's original time span (earliest cue's start to latest
-//cue's end) - and leaves every other section's cues untouched.
+//replaces every cue within the given section with the retyped text, split back across that section's original
+//cues (same start/end times as before - see retimeToOriginalCues) - and leaves every other section's cues untouched.
 export function buildUpdatedScript(fullVttText: string, sections: Marker[], section: Marker, newSectionText: string): string {
     const lines = getVtt(fullVttText)
     const {lower, upper} = getPrecedingSectionBounds(sections, section)
@@ -126,14 +239,7 @@ export function buildUpdatedScript(fullVttText: string, sections: Marker[], sect
         return fullVttText
     }
 
-    const sectionStart = Math.min(...sectionLines.map(l => l.start))
-    const sectionEnd = Math.max(...sectionLines.map(l => l.end))
-    const sentences = splitIntoSentences(newSectionText)
-
-    const newLines: Line[] = sentences.length > 0
-        ? distributeTiming(sentences, sectionStart, sectionEnd - sectionStart)
-        : [{start: sectionStart, end: sectionEnd, text: newSectionText.trim()}]
-
+    const newLines = retimeToOriginalCues(sectionLines, newSectionText)
     return linesToVtt([...outsideLines, ...newLines])
 }
 

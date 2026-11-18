@@ -32,7 +32,7 @@ from google.oauth2 import service_account as gcp_service_account
 from tracking_catalog import DEFAULT_PROJECTS, MEASURE_TYPES, SLUGWORKS_COURSE, course_items
 from tracking_sources import (
     BOOKING_COLLECTIONS, SourceUnavailable, booking_changes, calendar_changes, clean_google_file_id, clean_repo, custom_api_call, describe_changes,
-    diff_sheet, diff_slides, github_changes, github_metrics, github_summary, github_token_status, gmail_sent, google_connected, google_file_result, grade_day, measure_result, sheet_snapshot,
+    diff_sheet, diff_slides, github_changes, github_metrics, github_summary, github_token_status, gmail_sent, google_connected, google_doc_blocks, google_file_result, grade_day, measure_result, sheet_snapshot,
     slides_snapshot, strip_private_booking_fields,
 )
 
@@ -3811,6 +3811,9 @@ class ScriptRequest(BaseModel):
     scriptId: str
     videoExtension: str = "mp4"
     aiModel: Literal["chirp", "gemini"] = "chirp"
+    removeFillers: bool = True
+    autoSections: bool = True  # replaces the floor's markers with AI-picked sections
+    autoHighlights: bool = True  # replaces the floor's fill-in-the-blank highlights with AI-picked ones
 
 #moviepy, google.genai and the Speech-to-Text client are imported inside the functions that use them, not at the
 #top of the file - only script making needs them, and loading them on every cold start slows down the kiosk
@@ -3860,7 +3863,7 @@ def _generate_vtt_with_chirp(bucket, temp_local_audio: str, floor_id: str) -> st
         #Clean up the temporary audio copy from Cloud Storage
         audio_blob.delete()
 
-def _generate_vtt_with_gemini(temp_local_audio: str) -> str:
+def _generate_vtt_with_gemini(temp_local_audio: str, remove_fillers: bool = True) -> str:
     from google.genai import types
     print("Uploading audio to Gemini Files API...")
     gemini_file = _get_genai_client().files.upload(
@@ -3881,6 +3884,8 @@ def _generate_vtt_with_gemini(temp_local_audio: str) -> str:
         "Analyze this audio track and generate a precise transcript. "
         "The output MUST be formatted strictly in valid WebVTT (.vtt) file format. "
         "Include the 'WEBVTT' header, appropriate blank lines, and accurate timestamps (HH:MM:SS.mmm). "
+        + ("Leave out filler words and sounds (um, uh, er, hmm, and 'like' or 'you know' used as filler), keeping every other word as spoken. " if remove_fillers else "")
+        + 
         "Do not wrap the response in markdown blocks like ```vtt or ```text. Return ONLY raw VTT contents."
     )
 
@@ -3894,6 +3899,202 @@ def _generate_vtt_with_gemini(temp_local_audio: str) -> str:
     _get_genai_client().files.delete(name=gemini_file.name)
 
     return response.text
+
+#---- script clean-up after transcription: filler words, sections and highlights ----
+#The AI only ever rewrites caption TEXT and points at caption numbers - every time in the final script comes from the
+#transcription itself, so sections and highlights always line up with the video.
+FILLER_WORDS = re.compile(r"(?i)(?<![\w'])(?:u+m+|u+h+m*|e+r+m+|h+m+|m{2,})(?![\w'])[,.]?\s*")
+
+
+def _vtt_seconds(stamp: str) -> float:
+    parts = stamp.strip().replace(",", ".").split(":")
+    seconds = float(parts[-1])
+    minutes = int(parts[-2]) if len(parts) >= 2 else 0
+    hours = int(parts[-3]) if len(parts) >= 3 else 0
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _format_vtt_time(total: float) -> str:
+    total = max(0.0, total)
+    hours, rem = divmod(int(total), 3600)
+    minutes, seconds = divmod(rem, 60)
+    millis = int(round((total - int(total)) * 1000))
+    if millis == 1000:
+        seconds, millis = seconds + 1, 0
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
+def _parse_vtt(vtt: str) -> list[dict]:
+    cues = []
+    for block in re.split(r"\n\s*\n", vtt.replace("\r\n", "\n").strip()):
+        lines = block.strip().split("\n")
+        for i, line in enumerate(lines):
+            if "-->" not in line:
+                continue
+            start, end = [part.strip().split(" ")[0] for part in line.split("-->")[:2]]
+            text = " ".join(l.strip() for l in lines[i + 1:] if l.strip() and not l.strip().startswith("```"))
+            if text:
+                cues.append({"start": _vtt_seconds(start), "end": _vtt_seconds(end), "text": text})
+            break
+    return cues
+
+
+def _cues_to_vtt(cues: list[dict]) -> str:
+    return "WEBVTT\n\n" + "\n".join(f"{_format_vtt_time(c['start'])} --> {_format_vtt_time(c['end'])}\n{c['text']}\n" for c in cues)
+
+
+def _strip_fillers(text: str) -> str:
+    cleaned = re.sub(r"\s{2,}", " ", FILLER_WORDS.sub("", text)).strip()
+    cleaned = re.sub(r"^[,;]\s*", "", cleaned)
+    if cleaned and text[:1].isupper():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in re.sub(r"[^\w\s']", " ", text.lower()).split() if w]
+
+
+#Gemini's cleaned text is only used if it's really just the original line with words taken out - anything that
+#adds or swaps words (a "correction" of what the guide said) falls back to the original line.
+def _only_removes_words(original: str, cleaned: str) -> bool:
+    remaining = _words(original)
+    for word in _words(cleaned):
+        if word not in remaining:
+            return False
+        remaining = remaining[remaining.index(word) + 1:]
+    return True
+
+
+REFINE_PROMPT = """You are cleaning up an automatic transcript of a guided building-tour video for a tour-guide training app.
+Each numbered line below is one caption, shown as [number] (start-end) text.
+
+Return ONLY a JSON object with these keys:
+"lines": a list of {"i": line number, "text": cleaned text} for EVERY line. Clean text by removing filler words and sounds
+  (um, uh, er, hmm, "like" / "you know" / "I mean" / "kind of" / "sort of" used as filler), stutters and repeated words.
+  Never add, reword or reorder words. Fix capitalization and punctuation only where removing a word requires it.
+  A line that is only filler becomes "".
+"sections": the tour split into its stops, in order, as {"name": short title-case name of the place or topic (2-5 words),
+  "lastLine": number of the last line of that stop}. One section per distinct place or topic, usually 30-90 seconds long.
+  The final section must end at the final line.
+"highlights": the key facts a trainee should memorize, as {"line": line number, "phrase": words copied EXACTLY from that
+  line's cleaned text}. Pick names, numbers, dates, room or lab names and other specific facts - one to three per section,
+  each 1-5 words, never a whole line.
+
+Transcript:
+"""
+
+
+def _refine_script(cues: list[dict], remove_fillers: bool, want_sections: bool, want_highlights: bool,
+                   existing_markers: list[dict]) -> dict:
+    """Returns {"cues", "markers" (None = leave the floor's alone), "fillings" (None = leave alone), "notes"}."""
+    from google.genai import types
+    notes = []
+    data = {}
+    try:
+        numbered = "\n".join(f"[{i}] ({c['start']:.1f}s-{c['end']:.1f}s) {c['text']}" for i, c in enumerate(cues))
+        response = _get_genai_client().models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[REFINE_PROMPT + numbered],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2),
+        )
+        raw = (response.text or "").strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+    except Exception as e:
+        print(f"Script clean-up AI failed: {e}")
+        notes.append("The AI clean-up didn't work this time, so only um/uh were removed and sections and highlights were left as they were.")
+        data = {}
+        want_sections = want_highlights = False
+
+    #1. cleaned text, keeping every caption's original time
+    cleaned_by_index = {}
+    for entry in data.get("lines") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("i"), int) and isinstance(entry.get("text"), str):
+            cleaned_by_index[entry["i"]] = entry["text"].strip()
+    kept = []  # (original index, cue)
+    for i, cue in enumerate(cues):
+        text = cue["text"]
+        if remove_fillers:
+            ai_text = cleaned_by_index.get(i)
+            if ai_text is not None and _only_removes_words(text, ai_text):
+                text = ai_text
+            text = _strip_fillers(text)
+        if text:
+            kept.append((i, {**cue, "text": text}))
+    if not kept:
+        return {"cues": cues, "markers": None, "fillings": None, "notes": notes + ["Nothing was left after cleaning, so the transcript was kept as is."]}
+    final_cues = [c for _, c in kept]
+
+    def last_kept_at_or_before(index: int):
+        found = None
+        for orig, cue in kept:
+            if orig <= index:
+                found = cue
+        return found
+
+    #2. sections - each marker sits at the end of its last caption
+    markers = None
+    if want_sections:
+        markers = []
+        sections = [s for s in data.get("sections") or [] if isinstance(s, dict) and isinstance(s.get("lastLine"), int) and str(s.get("name", "")).strip()]
+        sections.sort(key=lambda s: s["lastLine"])
+        if sections:
+            sections[-1] = {**sections[-1], "lastLine": len(cues) - 1}
+        names = set()
+        for section in sections:
+            cue = last_kept_at_or_before(section["lastLine"])
+            if cue is None or (markers and cue["end"] <= markers[-1]["markTime"]):
+                continue
+            name, n = str(section["name"]).strip()[:60], 2
+            while name in names:
+                name, n = f"{str(section['name']).strip()[:56]} {n}", n + 1
+            names.add(name)
+            markers.append({"markerName": name, "markTime": cue["end"]})
+        if not markers:
+            notes.append("The AI didn't suggest any usable sections, so the floor's sections were left as they were.")
+            markers = None
+
+    #3. highlights - one fill per caption, with a blank for each picked phrase
+    fillings = None
+    if want_highlights:
+        section_markers = sorted(markers if markers is not None else existing_markers, key=lambda m: m["markTime"])
+        phrases_by_line = {}
+        for h in data.get("highlights") or []:
+            if isinstance(h, dict) and isinstance(h.get("line"), int) and isinstance(h.get("phrase"), str) and h["phrase"].strip():
+                phrases_by_line.setdefault(h["line"], []).append(h["phrase"].strip())
+        fillings = []
+        for orig, cue in kept:
+            text = cue["text"]
+            section = next((m for m in section_markers if m["markTime"] > cue["start"]), None)
+            if orig not in phrases_by_line or section is None:
+                continue
+            ranges = []
+            for phrase in phrases_by_line[orig]:
+                start = text.find(phrase)
+                if start == -1:
+                    start = text.lower().find(phrase.lower())
+                end = start + len(phrase)
+                if start == -1 or len(phrase) >= len(text) or any(start < r[1] and end > r[0] for r in ranges):
+                    continue
+                ranges.append((start, end))
+            if not ranges:
+                continue
+            ranges.sort()
+            blank, cursor = "", 0
+            for start, end in ranges:
+                blank += text[cursor:start] + "_____"
+                cursor = end
+            blank += text[cursor:]
+            fillings.append({"vttSectionSentenceFilled": text, "vttSectionSentenceBlank": blank,
+                             "section": {"markerName": section["markerName"], "markTime": section["markTime"]}})
+        if not section_markers:
+            notes.append("Highlights need sections, and this floor has none yet, so no highlights were made.")
+            fillings = None
+
+    return {"cues": final_cues, "markers": markers, "fillings": fillings, "notes": notes}
+
 
 @app.post("/make-script")
 def makeScript(request_data: ScriptRequest, admin_user: dict = Depends(require_admin)):
@@ -3927,18 +4128,54 @@ def makeScript(request_data: ScriptRequest, admin_user: dict = Depends(require_a
             video.audio.write_audiofile(temp_local_audio, logger=None)
 
         if request_data.aiModel == "gemini":
-            vtt_content = _generate_vtt_with_gemini(temp_local_audio)
+            vtt_content = _generate_vtt_with_gemini(temp_local_audio, request_data.removeFillers)
         else:
             vtt_content = _generate_vtt_with_chirp(bucket, temp_local_audio, request_data.floorId)
+
+        db = firestore.client()
+        floor_ref = None
+        existing_markers = []
+        script_doc = db.collection("training_data").document("data_root").collection("scripts").document(request_data.scriptId).get()
+        floor_code = (script_doc.to_dict() or {}).get("floorCode") if script_doc.exists else None
+        if floor_code:
+            floor_ref = db.collection("training_data").document("floors").collection(floor_code).document(request_data.floorId)
+            floor_snap = floor_ref.get()
+            existing_markers = ((floor_snap.to_dict() or {}).get("markers") or []) if floor_snap.exists else []
+
+        notes = []
+        markers = None
+        fillings = None
+        cues = _parse_vtt(vtt_content)
+        wants_sections = request_data.autoSections and floor_ref is not None
+        wants_highlights = request_data.autoHighlights and floor_ref is not None
+        if cues and (request_data.removeFillers or wants_sections or wants_highlights):
+            print("Cleaning up the script (filler words, sections, highlights)...")
+            refined = _refine_script(cues, request_data.removeFillers, wants_sections, wants_highlights, existing_markers)
+            vtt_content = _cues_to_vtt(refined["cues"])
+            markers, fillings, notes = refined["markers"], refined["fillings"], refined["notes"]
 
         #Upload the script back to Firebase
         print(f"Uploading script back to Firebase Storage at {script_path}...")
         script_blob.upload_from_string(vtt_content, content_type="text/vtt")
 
+        if markers is not None:
+            floor_ref.update({"markers": markers})
+            _reconcile_progress(request_data.floorId, [m["markTime"] for m in markers])
+        if fillings is not None:
+            db.collection("training_data").document("data_root").collection("fills").document(request_data.floorId).set(
+                {"floorId": request_data.floorId, "fillings": fillings})
+
+        summary = ["Script generated."]
+        if markers is not None:
+            summary.append(f"{len(markers)} section{'s' if len(markers) != 1 else ''} made.")
+        if fillings is not None:
+            count = sum(f["vttSectionSentenceBlank"].count("_____") for f in fillings)
+            summary.append(f"{count} highlight{'s' if count != 1 else ''} made.")
         return {
-            "success": True, 
+            "success": True,
             "floorId": request_data.floorId,
-            "message": "Script generated from audio and written to storage successfully."
+            "message": " ".join(summary + notes),
+            "markers": markers,
         }
 
     except Exception as e:
@@ -4011,6 +4248,23 @@ def transcribeAudio(request_data: TranscribeRequest, user: dict = Depends(get_cu
             os.remove(temp_local_audio)
 
 
+class GoogleDocRequest(BaseModel):
+    docUrl: str
+
+
+#the master script editor's "Import from Google Doc" - the doc's paragraphs, bullets and headings, with bold/italic.
+@app.post("/google-doc-script")
+def googleDocScript(request_data: GoogleDocRequest, admin_user: dict = Depends(require_admin)):
+    doc_id = clean_google_file_id(request_data.docUrl)
+    if not doc_id:
+        raise HTTPException(status_code=400, detail="That doesn't look like a Google Doc link.")
+    try:
+        result = google_doc_blocks(doc_id)
+    except SourceUnavailable as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, **result}
+
+
 class ReconcileProgressRequest(BaseModel):
     floorId: str
     markerTimes: list[float]
@@ -4025,8 +4279,17 @@ class ReconcileProgressRequest(BaseModel):
 #Admin SDK since it has to touch every user's document, not just the caller's own.
 @app.post("/reconcile-progress")
 def reconcileProgress(request_data: ReconcileProgressRequest, admin_user: dict = Depends(require_admin)):
+    updated_count = _reconcile_progress(request_data.floorId, request_data.markerTimes)
+    return {
+        "success": True,
+        "floorId": request_data.floorId,
+        "message": f"Reconciled progress for {updated_count} account(s)."
+    }
+
+
+def _reconcile_progress(floor_id: str, marker_times: list[float]) -> int:
     db = firestore.client()
-    valid_times = set(request_data.markerTimes)
+    valid_times = set(marker_times)
 
     users_ref = db.collection("training_data").document("data_root").collection("users")
     updated_count = 0
@@ -4040,7 +4303,7 @@ def reconcileProgress(request_data: ReconcileProgressRequest, admin_user: dict =
         changed = False
         new_progress_list = []
         for entry in progress_list:
-            if entry.get("floorId") == request_data.floorId:
+            if entry.get("floorId") == floor_id:
                 original = entry.get("progress") or []
                 pruned = [p for p in original if p.get("sectionTime") in valid_times]
                 if len(pruned) != len(original):
@@ -4060,12 +4323,7 @@ def reconcileProgress(request_data: ReconcileProgressRequest, admin_user: dict =
 
     if batch_size > 0:
         batch.commit()
-
-    return {
-        "success": True,
-        "floorId": request_data.floorId,
-        "message": f"Reconciled progress for {updated_count} account(s)."
-    }
+    return updated_count
 
 #---- Firebase Functions entrypoint ----
 #Cloud Functions for Firebase (2nd gen, Python) discovers module-level https_fn.on_request()-decorated

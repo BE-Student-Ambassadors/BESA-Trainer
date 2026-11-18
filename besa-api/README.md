@@ -55,10 +55,12 @@ firebase functions:secrets:set GOOGLE_TRACKING_REFRESH_TOKEN
 
 **Google:** everything is read through one account, ucscbesa@ucsc.edu.
 
-1. In Google Cloud, enable the Gmail, Calendar, Sheets, Slides and Drive APIs.
+1. In Google Cloud, enable the Gmail, Calendar, Sheets, Slides, Drive and Docs APIs.
 2. Create an OAuth client of type Desktop app.
 3. Publish the OAuth consent screen, or make it Internal if the project is in the UCSC organization. While it's in Testing, Google expires the refresh token after 7 days.
 4. Run `connect_google.py` as described at the top of that file, signing in as ucscbesa@ucsc.edu, and store the token it prints.
+
+The Section Editor's Master Script page imports scripts from Google Docs through this same account. That needs the Docs scope, which was added after the account was first connected. To get it, run `connect_google.py` again and store the new token. Until then, only docs shared as "anyone with the link" can be imported, and only as plain text with no bold or italic.
 
 UCSC's Google admins can block third-party apps from Gmail. If the sign-in is refused, that's the first thing to check.
 

@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useSearchParams } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useSearchParams } from "react-router-dom";
 import Header from "../Components/Header";
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 
@@ -9,6 +9,7 @@ import { HiBeaker } from "react-icons/hi";
 import { FaTree } from "react-icons/fa";
 import { FaTools } from "react-icons/fa";
 import { FaHandshakeSimple } from "react-icons/fa6";
+import { MdOutlineEditNote } from "react-icons/md";
 
 
 
@@ -38,6 +39,7 @@ export function SideBar({expand, setExpand}: {expand: boolean, setExpand: Dispat
     const [navStyles, setNavStyles] = useState(Array(6).fill(false))
     const [searchParams] = useSearchParams()
     const f = searchParams.get("f")
+    const onMasterScript = useLocation().pathname.endsWith("/master-script")
     const sidebarNavStyle = "flex items-center hover:bg-gray-800 p-3 rounded-full gap-3 my-3 mx-auto justify-" + (expand ? "start" : "center")
 
     useEffect(() => {
@@ -96,9 +98,13 @@ export function SideBar({expand, setExpand}: {expand: boolean, setExpand: Dispat
             <hr className="w-full mt-3"/>
 
             {/* Tutorials if needed */}
-            <NavLink to="getting-started" className={sidebarNavStyle + (navStyles[0] ? " bg-gray-800" : "")}>
+            <NavLink to="getting-started" className={sidebarNavStyle + (navStyles[0] && !onMasterScript ? " bg-gray-800" : "")}>
                 <LuNewspaper className="border-solid border-2 border-gray-200 p-2 box-content rounded-full w-6 h-6"/>
                 <h4 className={"text-xl " + (expand ? "" : "hidden")}>Getting Started</h4>
+            </NavLink>
+            <NavLink to="master-script" className={sidebarNavStyle + (onMasterScript ? " bg-gray-800" : "")}>
+                <MdOutlineEditNote className="border-solid border-2 border-gray-200 p-2 box-content rounded-full w-6 h-6"/>
+                <h4 className={"text-xl " + (expand ? "" : "hidden")}>Master Script</h4>
             </NavLink>
 
             <hr className="w-3/4 mt-3 mx-auto bg-gray-100"/>
