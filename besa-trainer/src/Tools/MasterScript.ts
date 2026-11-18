@@ -201,6 +201,47 @@ export function sectionMarkers(items: MasterItem[], timing: MasterTiming): {mark
     return {markers, errors}
 }
 
+//a line that runs across a section marker is cut there, so each section gets the words actually spoken during it.
+//Words are timed evenly across their line, each goes to the side of the marker its middle falls on, and the cut is
+//nudged to a nearby sentence/clause end when there's one within two words. Returns how many lines were cut.
+export function splitLinesAtMarkers(lines: Line[], markers: Marker[]): {lines: Line[], splitCount: number} {
+    const times = markers.map(m => m.markTime).sort((a, b) => a - b)
+    const out: Line[] = []
+    let splitCount = 0
+    for (const line of [...lines].sort((a, b) => a.start - b.start)) {
+        const inside = times.filter(t => t > line.start && t < line.end)
+        const words = line.text.split(/\s+/).filter(Boolean)
+        if (inside.length === 0 || words.length < 2) {
+            out.push(line)
+            continue
+        }
+        const span = line.end - line.start
+        const edges = [line.start, ...inside, line.end]
+        const segmentOf = (k: number) => {
+            const t = line.start + span * (k + 0.5) / words.length
+            return edges.findIndex((_, e) => e < edges.length - 1 && t <= edges[e + 1])
+        }
+        const boundaries = [0]
+        for (let s = 1; s < edges.length - 1; s++) {
+            let b = 0
+            while (b < words.length && segmentOf(b) < s) b++
+            boundaries.push(Math.max(b, boundaries[boundaries.length - 1]))
+        }
+        boundaries.push(words.length)
+        snapBoundariesToSentences(words, boundaries, 2)
+
+        let pieces = 0
+        for (let s = 0; s < edges.length - 1; s++) {
+            const text = words.slice(boundaries[s], boundaries[s + 1]).join(" ")
+            if (!text) continue
+            out.push({start: edges[s], end: edges[s + 1], text})
+            pieces++
+        }
+        if (pieces > 1) splitCount++
+    }
+    return {lines: out, splitCount}
+}
+
 //builds the master script's starting items from a draft's VTT and markers - one paragraph per cue (so saving
 //without edits gives back the same cues), with each marker's break after the last cue in its section.
 export function itemsFromVtt(lines: Line[], markers: Marker[]): MasterItem[] {

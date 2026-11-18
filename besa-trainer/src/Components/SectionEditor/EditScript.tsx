@@ -198,7 +198,8 @@ export default function EditScript ({selected, setFloor} : {selected: Floor, set
         const located = locateLines(textArea, getVtt(textArea))
 
         const positions = selected.markers.map(marker => {
-            const before = located.filter(l => l.line.end <= marker.markTime)
+            //same midpoint rule the simulator uses to decide which section a line is in
+            const before = located.filter(l => (l.line.start + l.line.end) / 2 <= marker.markTime)
             let offset = 0
             if (before.length > 0) {
                 //drop onto the start of the next raw line, off of the previous sentence's own line

@@ -51,16 +51,13 @@ export function getPrecedingSectionBounds(sections: Marker[], section: Marker): 
     }
 }
 
-//since sentence timing doesn't line up with section markers, a sentence that straddles the
-//boundary is assigned to whichever section holds the majority of its duration.
+//since sentence timing doesn't line up with section markers, a line that straddles a boundary belongs to the
+//section its midpoint falls in - so every line is in exactly one section. (A "most of its duration" rule used to be
+//here, but a long line running across two or more markers had less than half its time in each, so it showed up in
+//no section at all and those sections looked empty.)
 export function isLineInSection(line: Line, lower: number, upper: number): boolean {
-    const overlap = Math.min(line.end, upper) - Math.max(line.start, lower)
-    if (overlap <= 0) {
-        return false
-    }
-
-    const lineDuration = line.end - line.start
-    return lineDuration <= 0 || overlap >= lineDuration / 2
+    const mid = (line.start + line.end) / 2
+    return mid > lower && mid <= upper
 }
 
 //pads a VTT cue timestamp component - eg pad(4) -> "04", pad(4, 3) -> "004"

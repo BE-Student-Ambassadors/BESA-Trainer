@@ -4,7 +4,7 @@ import { getStorage, ref, uploadBytes } from "firebase/storage"
 import { db } from "../../Tools/firestore"
 import { fetchGoogleDocScript, getScript, reconcileProgress, type GoogleDocBlock } from "../../Tools/Fetch"
 import { getVtt, linesToVtt, type Line } from "../../Tools/ScriptDecoder"
-import { formatClock, itemsFromVtt, resectionFills, sectionMarkers, timeMasterScript, type MasterItem } from "../../Tools/MasterScript"
+import { formatClock, itemsFromVtt, resectionFills, sectionMarkers, splitLinesAtMarkers, timeMasterScript, type MasterItem } from "../../Tools/MasterScript"
 import type { Fill, Floor, FloorCode, Marker, Script } from "../../Tools/types"
 import { Loading } from "./Edit"
 
@@ -134,11 +134,18 @@ function DraftMasterEditor({draft, onMarkersSaved}: {draft: Floor, onMarkersSave
             return
         }
         const {script: s, vttText, master} = loaded
-        const lines = safeVtt(vttText)
-        const upToDate = master && master.vtt === vttText && sameMarkers(master.markers || [], draft.markers)
-        if (master && !upToDate) {
-            setNotice("This script was changed in a section editor since the master script was last saved, so it was reloaded from the current script and its bold/italic/bullets were reset.")
+        //lines that run across a section marker are cut at it first - otherwise the words spoken during a short
+        //section all sit in one line that belongs to a neighbouring section, and the section looks empty
+        const {lines, splitCount} = splitLinesAtMarkers(safeVtt(vttText), draft.markers)
+        const upToDate = master && splitCount === 0 && master.vtt === vttText && sameMarkers(master.markers || [], draft.markers)
+        const notes: string[] = []
+        if (splitCount > 0) {
+            notes.push(`${splitCount} line${splitCount > 1 ? "s" : ""} ran across a section break, so ${splitCount > 1 ? "they were" : "it was"} split at the break to give each section the words spoken during it. Press Save to keep this. A highlight on a split line will be removed, so re-add it in the section editor.`)
         }
+        if (master && (master.vtt !== vttText || !sameMarkers(master.markers || [], draft.markers))) {
+            notes.push("This script was changed in a section editor since the master script was last saved, so it was reloaded from the current script and its bold/italic/bullets were reset.")
+        }
+        setNotice(notes.join(" "))
         if (master?.docUrl) setDocUrl(master.docUrl)
         setScript(s)
         setReference(lines)
@@ -147,7 +154,7 @@ function DraftMasterEditor({draft, onMarkersSaved}: {draft: Floor, onMarkersSave
             editorRef.current.innerHTML = upToDate && master ? sanitizeHtml(master.html) : itemsToHtml(itemsFromVtt(lines, draft.markers))
             ensureParagraph(editorRef.current)
         }
-        setDirty(false)
+        setDirty(splitCount > 0)
         setLoading(false)
     }
 
