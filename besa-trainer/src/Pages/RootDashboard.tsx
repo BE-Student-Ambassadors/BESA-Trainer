@@ -10,6 +10,7 @@ import SessionNotes from "../Components/SessionNotes"
 import WorkReportForm, { emptyEntries, toWorkReport, withDefaultConfirmed, type WorkEntries } from "../Components/WorkReportForm"
 import WorkGradeResult from "../Components/WorkGradeResult"
 import TaskNoteCard, { TaskNotesGroup } from "../Components/TaskNoteCard"
+import { dueTaskNotes, formatDeadline, taskNoteSummary } from "../Tools/taskNotes"
 import { FaPlus } from "react-icons/fa"
 import {
     addActivityType, addSessionNote, canceledTour, checkTaskNoteItem, clockIn, clockOut, clockOutPreview, collectWork, endBreak, getActivityTypes, getClockInOptions, getCurrentSessions,
@@ -85,8 +86,10 @@ function ActivityChip({label, selected, onClick}: {label: string, selected: bool
     )
 }
 
-//a task a BESA Lead assigned this person (Assign Tasks) - ringed, with "Lead recommended" under the name
-function RecommendedChip({label, selected, onClick}: {label: string, selected: boolean, onClick: () => void}) {
+//a task a BESA Lead assigned this person (Assign Tasks) - ringed, with "Lead recommended" under the name, and the
+//priority and deadline from the lead's note when it has them
+function RecommendedChip({label, note, selected, onClick}: {label: string, note?: TaskNote, selected: boolean, onClick: () => void}) {
+    const summary = taskNoteSummary(note)
     return (
         <button
             type="button"
@@ -96,6 +99,12 @@ function RecommendedChip({label, selected, onClick}: {label: string, selected: b
         >
             {label}
             <span className={"text-[10px] font-medium uppercase tracking-wide " + (selected ? "text-black/80" : "text-be-yellow")}>Lead recommended</span>
+            {summary &&
+                <span className={"text-[11px] font-semibold mt-0.5 " +
+                    (summary.overdue ? (selected ? "text-red-900" : "text-red-300") : (selected ? "text-black" : "text-white/90"))}>
+                    {summary.text}
+                </span>
+            }
         </button>
     )
 }
@@ -202,9 +211,10 @@ function ClockInPanel({onClockedIn}: {onClockedIn: () => void}) {
                 {lookup.alreadyClockedIn ?
                     <p className="text-sm text-center text-be-yellow mb-4">{lookup.besaName} is already clocked in.</p>
                     : <>
+                        <DueTasks notes={lookup.taskNotes}/>
                         <div className="flex flex-wrap gap-2 justify-center items-center mb-4">
                             {lookup.recommended.map(name => (
-                                <RecommendedChip key={name} label={name} selected={selected.includes(name)} onClick={() => toggleActivity(name)}/>
+                                <RecommendedChip key={name} label={name} note={lookup.taskNotes.find(n => n.task === name)} selected={selected.includes(name)} onClick={() => toggleActivity(name)}/>
                             ))}
                             {lookup.tasks.filter(name => !lookup.recommended.includes(name)).map(name => (
                                 <ActivityChip key={name} label={name} selected={selected.includes(name)} onClick={() => toggleActivity(name)}/>
@@ -232,6 +242,35 @@ function ClockInPanel({onClockedIn}: {onClockedIn: () => void}) {
                 Submit
             </button>
         </section>
+    )
+}
+
+//what they have due, shown as soon as their School Id is found - before they pick any tasks - so the deadlines
+//are the first thing they see. Overdue first, then soonest due; finished checklists drop off.
+function DueTasks({notes}: {notes: TaskNote[]}) {
+    const due = dueTaskNotes(notes)
+    if (due.length === 0) {
+        return <p className="text-xs text-be-light-gray text-center mb-3">Nothing due right now.</p>
+    }
+    return (
+        <div className="mb-4 rounded-xl border border-be-orange/70 bg-be-navy-darker p-3 text-sm">
+            <p className="font-bold text-be-orange mb-2 text-center">Due {due.some(n => n.overdue) ? "(and overdue)" : "soon"}</p>
+            <ul className="flex flex-col gap-1.5">
+                {due.map(note => {
+                    const done = note.items.filter(i => i.done).length
+                    return (
+                        <li key={note.task} className={"flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg px-2 py-1.5 " + (note.overdue ? "bg-red-900/40" : "bg-white/5")}>
+                            <span className="font-semibold text-white">{note.task}</span>
+                            <span className={"text-xs font-semibold " + (note.overdue ? "text-red-300" : "text-be-yellow")}>
+                                {note.overdue ? "Overdue - was due " : "Due "}{formatDeadline(note.deadline!)}
+                            </span>
+                            {note.priority && <span className="text-[11px] text-be-light-gray">{note.priority[0].toUpperCase() + note.priority.slice(1)} priority</span>}
+                            <span className="text-[11px] text-be-light-gray ml-auto tabular-nums">{done} of {note.items.length} done</span>
+                        </li>
+                    )
+                })}
+            </ul>
+        </div>
     )
 }
 
@@ -585,9 +624,15 @@ function SessionRow({session, onChanged, onLeaveEarly}: {session: KioskSession, 
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <span className="font-semibold">{session.besaName || "(no name on file)"}</span>
                 <div className="flex flex-wrap gap-1">
-                    {session.activities.map(a => (
-                        <span key={a} className="text-xs px-2 py-0.5 rounded-full bg-amber-500 text-black">{a}</span>
-                    ))}
+                    {/* each task they clocked in for, with its priority and deadline from the lead's note */}
+                    {session.activities.map(a => {
+                        const summary = taskNoteSummary((session.taskNotes || []).find(n => n.task === a))
+                        return (
+                            <span key={a} className={"text-xs px-2 py-0.5 rounded-full text-black " + (summary?.overdue ? "bg-red-400" : "bg-amber-500")}>
+                                {a}{summary && <span className="font-semibold"> · {summary.text}</span>}
+                            </span>
+                        )
+                    })}
                 </div>
             </div>
 

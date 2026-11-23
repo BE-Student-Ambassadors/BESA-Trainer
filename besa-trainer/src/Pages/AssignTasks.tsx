@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react"
 import { MoonLoader } from "react-spinners"
-import { FaPlus, FaRegStickyNote, FaTrash } from "react-icons/fa"
+import { FaCheck, FaPlus, FaRegBell, FaRegStickyNote, FaTrash } from "react-icons/fa"
+import { formatDeadline } from "../Tools/taskNotes"
 import Header from "../Components/Header"
 import TaskNoteCard from "../Components/TaskNoteCard"
-import { addActivityType, assignTasks, getActivityTypes, getBesaAccounts, setTaskNote, type BesaAccount, type TaskNote, type TaskPriority } from "../Tools/Fetch"
+import { addActivityType, assignTasks, getActivityTypes, getBesaAccounts, remindTask, setTaskNote, type BesaAccount, type TaskNote, type TaskPriority } from "../Tools/Fetch"
 
 const TASK_NAME_MAX_LENGTH = 40 // same cap as the backend's TASK_NAME_MAX_LENGTH
 //same caps as the backend's TASK_NOTE_* limits
@@ -94,7 +95,8 @@ export default function AssignTasks() {
                     "Lead recommended", and those are the only tasks they can pick there (anything else goes under Other). BESA Leads can have tasks too, including your own.
                     To set a priority or deadline, open a task's note under someone's name - a deadline needs checkboxes, plus a date
                     (and a time, if you want). People are emailed about a task when it's assigned to them or its priority or deadline
-                    changes, a few minutes after your last edit, so several changes go out as one email.
+                    changes, a few minutes after your last edit, so several changes go out as one email. Remind sends them an
+                    email about that task straight away, with its due date.
                 </p>
 
                 {accounts === null || tasks === null ?
@@ -160,6 +162,9 @@ export default function AssignTasks() {
                                                     {assigned.length === 0 ? "No recommended tasks" : `${assigned.length} task${assigned.length === 1 ? "" : "s"}`}
                                                 </span>
                                                 {saving && <MoonLoader color="white" size={14}/>}
+                                                {assigned.length > 0 &&
+                                                    <div className="ml-auto"><RemindButton account={account} tasks={assigned}/></div>
+                                                }
                                             </div>
                                             <div className="flex flex-wrap gap-2 mb-3">
                                                 {tasks.map(task => {
@@ -208,24 +213,66 @@ function MemberTaskNotes({account, tasks, onSaved}: {account: BesaAccount, tasks
                 return (
                     <div key={task} className="flex items-start gap-2">
                         <div className="flex-1 min-w-0"><TaskNoteCard note={note}/></div>
-                        <button onClick={() => setEditing(task)} disabled={editing !== null}
-                            className="text-xs px-3 py-2 rounded-full bg-gray-700 hover:bg-gray-600 disabled:opacity-40 shrink-0">
-                            {note.deadline && note.priority ? "Edit" : "Edit / Set Priority & Deadline"}
-                        </button>
+                        <div className="flex flex-col sm:flex-row items-stretch gap-2 shrink-0">
+                            <button onClick={() => setEditing(task)} disabled={editing !== null}
+                                className="text-xs px-3 py-2 rounded-full bg-gray-700 hover:bg-gray-600 disabled:opacity-40">
+                                {note.deadline && note.priority ? "Edit" : "Edit / Set Priority & Deadline"}
+                            </button>
+                            <RemindButton account={account} task={task} note={note}/>
+                        </div>
                     </div>
                 )
             })}
-            {withoutNote.length > 0 && editing === null &&
-                <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-xs text-gray-400">Add a note, priority or deadline:</span>
-                    {withoutNote.map(task => (
-                        <button key={task} onClick={() => setEditing(task)}
-                            className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-gray-600 text-gray-300 hover:bg-gray-700">
-                            <FaRegStickyNote size={10}/> {task}
+            {/* tasks with no note yet - add one (for a priority or deadline), or remind them about the task as it is */}
+            {withoutNote.filter(task => task !== editing).map(task => (
+                <div key={task} className="flex items-center gap-2 rounded-lg border border-dashed border-gray-600 px-3 py-1.5 text-sm">
+                    <span className="font-semibold text-gray-200">{task}</span>
+                    <span className="text-xs text-gray-500">No note, priority or deadline</span>
+                    <div className="ml-auto flex flex-col sm:flex-row items-stretch gap-2 shrink-0">
+                        <button onClick={() => setEditing(task)} disabled={editing !== null}
+                            className="flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-full bg-gray-700 hover:bg-gray-600 disabled:opacity-40">
+                            <FaRegStickyNote size={10}/> Add note
                         </button>
-                    ))}
+                        <RemindButton account={account} task={task}/>
+                    </div>
                 </div>
-            }
+            ))}
+        </div>
+    )
+}
+
+//emails the person right now about one task (`task`, with its note if it has one), or - given `tasks` instead -
+//about every task they're assigned in one email, soonest due first. Says "Reminder sent" after.
+function RemindButton({account, task, note, tasks}: {account: BesaAccount, task?: string, note?: TaskNote, tasks?: string[]}) {
+    const [state, setState] = useState<"idle" | "sending" | "sent">("idle")
+    const [error, setError] = useState("")
+    const name = account.besaName || "this person"
+
+    async function remind() {
+        const question = task
+            ? `Email ${name} a reminder about ${task}${note?.deadline ? ` with its due date (${formatDeadline(note.deadline)})` : " (it has no due date)"}?`
+            : `Email ${name} one reminder about all ${tasks?.length || 0} of their tasks, with their due dates?`
+        if (!window.confirm(question)) return
+        setState("sending")
+        setError("")
+        const result = await remindTask(account.uid, task)
+        if (result.success) {
+            setState("sent")
+        } else {
+            setState("idle")
+            setError(result.detail || "Couldn't send the reminder.")
+        }
+    }
+
+    return (
+        <div className="flex flex-col items-stretch">
+            <button onClick={() => void remind()} disabled={state !== "idle"} title={task ? `Email ${name} about ${task} now` : `Email ${name} about all their tasks now`}
+                className={"text-xs px-3 py-2 rounded-full flex items-center justify-center gap-1.5 disabled:cursor-default " +
+                    (state === "sent" ? "bg-green-900/60 text-green-300" : "bg-blue-800 hover:bg-blue-900 disabled:opacity-60")}>
+                {state === "sending" ? <MoonLoader color="white" size={10}/> : state === "sent" ? <FaCheck size={10}/> : <FaRegBell size={10}/>}
+                {state === "sent" ? "Reminder sent" : task ? "Remind" : "Remind about all"}
+            </button>
+            {error && <p className="text-red-400 text-[11px] mt-1 max-w-40">{error}</p>}
         </div>
     )
 }

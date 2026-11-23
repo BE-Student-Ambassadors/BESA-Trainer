@@ -90,6 +90,12 @@ export function setTaskNote(targetUid: string, task: string, description: string
     return kioskPost("task-notes/set", {targetUid, task, description, items, deadline, priority})
 }
 
+//BESA Lead only - emails them right now about one of their tasks (or, with no task, all of them), with each one's
+//due date, priority, note and checklist
+export function remindTask(targetUid: string, task?: string): Promise<{success: boolean, detail?: string}> {
+    return kioskPost("task-notes/remind", {targetUid, task: task ?? null})
+}
+
 //ticks one checkbox - the root kiosk passes whose note it is; a member checking their own leaves targetUid out
 export function checkTaskNoteItem(task: string, itemId: string, done: boolean, targetUid?: string): Promise<{success: boolean, detail?: string, taskNotes?: TaskNote[]}> {
     return kioskPost("task-notes/check", {targetUid, task, itemId, done})

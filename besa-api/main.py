@@ -650,6 +650,70 @@ def checkTaskNoteItem(request_data: CheckTaskNoteItemRequest, user: dict = Depen
     return {"success": True, "taskNotes": _serialize_task_notes(notes, _activity_types(db))}
 
 
+class RemindTaskRequest(BaseModel):
+    targetUid: str
+    task: str | None = None  # left out: remind them about every task they're assigned
+
+
+#when a note is due, for sorting reminders: overdue first, then soonest due, then tasks with no deadline
+def _reminder_order(task: str, note: dict):
+    deadline = note.get("deadline")
+    if not deadline:
+        return (2, datetime.max.replace(tzinfo=PACIFIC), task)
+    return (0 if _note_overdue(note) else 1, _deadline_end(deadline), task)
+
+
+#"This was due by ... and isn't finished yet." / "It's due by ..." / "It doesn't have a due date."
+def _reminder_due_line(note: dict) -> str:
+    if not note.get("deadline"):
+        return "It doesn't have a due date."
+    due = _deadline_text(note["deadline"])
+    return f"This was due by {due} and isn't finished yet." if _note_overdue(note) else f"It's due by {due}."
+
+
+#BESA Lead (or root admin) - Assign Tasks' Remind buttons: emails the member right away about one of their tasks, or
+#all of them, with each one's due date, priority, note and checklist as they stand now
+@app.post("/task-notes/remind")
+def remindTask(request_data: RemindTaskRequest, lead_user: dict = Depends(require_lead_or_root_admin)):
+    db = firestore.client()
+    _, data = _besa_doc_by_uid(db, request_data.targetUid)
+    available = _activity_types(db)
+    assigned = [t for t in data.get("assignedTasks") or [] if t in available]
+    all_notes = data.get("taskNotes") if isinstance(data.get("taskNotes"), dict) else {}
+    note_of = lambda t: all_notes.get(t) if isinstance(all_notes.get(t), dict) else {}
+    name = data.get("besaName") or "there"
+    if request_data.task is not None:
+        task = request_data.task.strip()
+        if task not in assigned:
+            raise HTTPException(status_code=400, detail=f'"{task}" isn\'t assigned to them anymore - reload the page.')
+        note = note_of(task)
+        if note.get("deadline"):
+            subject = f"{'Overdue' if _note_overdue(note) else 'Reminder'}: {task} - due {_deadline_text(note['deadline'])}"
+        else:
+            subject = f"Reminder: {task}"
+        intro = f"A BESA Lead is reminding you about your {task} task. {_reminder_due_line(note)}"
+        sections = _task_email_section(task, "new", note)
+        what = f"Task-reminder ({name}, {task})"
+    else:
+        if not assigned:
+            raise HTTPException(status_code=400, detail="They don't have any tasks assigned yet.")
+        tasks = sorted(assigned, key=lambda t: _reminder_order(t, note_of(t)))
+        overdue = [t for t in tasks if _note_overdue(note_of(t))]
+        dated = [t for t in tasks if note_of(t).get("deadline") and t not in overdue]
+        subject = (f"Reminder: {len(overdue)} overdue BESA task{'s' if len(overdue) != 1 else ''}" if overdue
+                   else f"Reminder: your BESA tasks{' - next due ' + _deadline_text(note_of(dated[0])['deadline']) if dated else ''}")
+        intro = (f"A BESA Lead is reminding you about your {len(tasks)} task{'s' if len(tasks) != 1 else ''}, "
+                 "soonest due first" + (f" ({len(overdue)} overdue)." if overdue else "."))
+        sections = "\n\n".join(_task_email_section(t, "new", note_of(t)) for t in tasks)
+        what = f"Task-reminder ({name}, all)"
+    body = (f"Hi {name},\n\n{intro}\n\n{sections}\n\n"
+            f"See all your tasks and check things off on your BESA Trainer dashboard: {SITE_URL}\n"
+            "Check items off at the kiosk while you're clocked in so they count toward that day's grade.")
+    if not _send_alert_email(subject, body, lambda: {request_data.targetUid}, what):
+        raise HTTPException(status_code=502, detail="The reminder email couldn't be sent - please try again.")
+    return {"success": True}
+
+
 #to every BESA Lead and root account, when someone ticks the last checkbox on a task note
 def _notify_checklist_done(besa_name, task: str, note: dict):
     name = besa_name or "A BESA"
@@ -1672,16 +1736,16 @@ def _auth_emails(uids) -> list:
 
 
 #sends one alert email to the accounts recipient_uids() returns (BCC'd). Does nothing if the Gmail secrets aren't
-#set, and never raises - an alert failing must never fail the action that triggered it.
-def _send_alert_email(subject: str, body: str, recipient_uids, what: str):
+#set, and never raises - an alert failing must never fail the action that triggered it. True when it went out.
+def _send_alert_email(subject: str, body: str, recipient_uids, what: str) -> bool:
     sender = os.getenv("BREAK_ALERT_GMAIL_ADDRESS")
     app_password = os.getenv("BREAK_ALERT_GMAIL_APP_PASSWORD")
     if not sender or not app_password:
-        return
+        return False
     try:
         recipients = _auth_emails(recipient_uids())
         if not recipients:
-            return
+            return False
         message = EmailMessage()
         message["Subject"] = subject
         message["From"] = sender
@@ -1690,8 +1754,10 @@ def _send_alert_email(subject: str, body: str, recipient_uids, what: str):
         with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=10) as smtp:
             smtp.login(sender, app_password)
             smtp.send_message(message, to_addrs=[sender] + recipients)
+        return True
     except Exception as e:
         print(f"{what} email failed: {e}")
+        return False
 
 
 #to the BESA whose break it was, every BESA Lead, and the root account(s)
