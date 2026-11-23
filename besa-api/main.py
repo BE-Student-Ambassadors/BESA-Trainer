@@ -688,7 +688,7 @@ def remindTask(request_data: RemindTaskRequest, lead_user: dict = Depends(requir
             raise HTTPException(status_code=400, detail=f'"{task}" isn\'t assigned to them anymore - reload the page.')
         note = note_of(task)
         if note.get("deadline"):
-            subject = f"{'Overdue' if _note_overdue(note) else 'Reminder'}: {task} - due {_deadline_text(note['deadline'])}"
+            subject = f"{'Overdue' if _note_overdue(note) else 'Reminder'}: {task} - due by {_deadline_text(note['deadline'])}"
         else:
             subject = f"Reminder: {task}"
         intro = f"A BESA Lead is reminding you about your {task} task. {_reminder_due_line(note)}"
@@ -701,7 +701,7 @@ def remindTask(request_data: RemindTaskRequest, lead_user: dict = Depends(requir
         overdue = [t for t in tasks if _note_overdue(note_of(t))]
         dated = [t for t in tasks if note_of(t).get("deadline") and t not in overdue]
         subject = (f"Reminder: {len(overdue)} overdue BESA task{'s' if len(overdue) != 1 else ''}" if overdue
-                   else f"Reminder: your BESA tasks{' - next due ' + _deadline_text(note_of(dated[0])['deadline']) if dated else ''}")
+                   else f"Reminder: your BESA tasks{' - next due by ' + _deadline_text(note_of(dated[0])['deadline']) if dated else ''}")
         intro = (f"A BESA Lead is reminding you about your {len(tasks)} task{'s' if len(tasks) != 1 else ''}, "
                  "soonest due first" + (f" ({len(overdue)} overdue)." if overdue else "."))
         sections = "\n\n".join(_task_email_section(t, "new", note_of(t)) for t in tasks)
